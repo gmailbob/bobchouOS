@@ -199,27 +199,36 @@ Total: approximately **36 weeks (~9 months)** of active development at a part-ti
 - **[Brokenthorn OS Dev Series](http://www.brokenthorn.com/Resources/)** — Classic bare-metal OS tutorial (x86, but conceptually transferable).
 - **[Writing an OS in Rust](https://os.phil-opp.com/)** — Not directly used here, but an excellent resource for a future Rust-based OS project.
 
-## Project Structure (Planned)
+## Project Structure
 
 ```
 bobchouOS/
-├── bootloader/         # Minimal M-mode setup (if not using OpenSBI)
-├── kernel/
-│   ├── arch/           # RISC-V specific: entry.S, traps, CSR access
-│   ├── mm/             # Memory management: kalloc, vm, kmalloc
-│   ├── proc/           # Process management: proc, scheduler, swtch
-│   ├── fs/             # File system: buffer cache, inodes, directories
-│   ├── drivers/        # UART, virtio-blk, PLIC, CLINT
-│   ├── syscall/        # System call dispatch and implementations
-│   └── main.c          # Kernel entry point
-├── userspace/          # User-mode programs (shell, cat, echo, ls)
-├── mkfs/               # Host tool to build filesystem images
-├── scripts/            # QEMU launch scripts, GDB helpers
+├── lectures/               # Learning materials and exercises
+│   ├── 0-1-tooling/        #   Toolchain setup + bare-metal hello world
+│   ├── 0-2-.../            #   (future: C recap)
+│   └── 1-1-.../            #   (future: boot & early kernel)
+├── kernel/                 # Kernel source (Phase 1+)
+│   ├── arch/               #   RISC-V specific: entry.S, traps, CSR access
+│   ├── mm/                 #   Memory management: kalloc, vm, kmalloc
+│   ├── proc/               #   Process management: proc, scheduler, swtch
+│   ├── fs/                 #   File system: buffer cache, inodes, directories
+│   ├── drivers/            #   UART, virtio-blk, PLIC, CLINT
+│   ├── syscall/            #   System call dispatch and implementations
+│   └── main.c              #   Kernel entry point
+├── bootloader/             # Minimal M-mode setup (if not using OpenSBI)
+├── userspace/              # User-mode programs (shell, cat, echo, ls)
+├── mkfs/                   # Host tool to build filesystem images
+├── scripts/                # QEMU launch scripts, GDB helpers
 ├── Makefile
-├── linker.ld           # Kernel linker script
+├── linker.ld               # Kernel linker script
 ├── LICENSE
 └── README.md
 ```
+
+The `lectures/` directory contains learning materials organized by phase and
+step (e.g., `0-1-tooling`, `0-2-c-recap`). Each lecture includes a writeup
+and self-contained code exercises that can be built and run independently.
+The `kernel/` directory (Phase 1 onward) is the actual OS source code.
 
 ## License
 
