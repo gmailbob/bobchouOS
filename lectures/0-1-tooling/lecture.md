@@ -198,51 +198,84 @@ We'll interact with each of these as the project progresses.
 With the toolchain and emulator installed, we can now prove they work together
 by writing the smallest possible program that produces visible output.
 
-### The challenge
+### The big picture — what happens from power-on to "Hello"
 
-There is no OS running. No C runtime calls `main()` for us. No `printf()`
-exists. We have to:
+```
+QEMU starts
+    ↓
+QEMU firmware jumps to 0x80000000    ← hardcoded by QEMU's "virt" machine spec
+    ↓
+_start runs  (entry.S)               ← sets up stack, calls main()
+    ↓
+main() runs  (main.c)                ← writes bytes to UART memory address
+    ↓
+UART hardware transmits bytes        ← QEMU shows them in your terminal
+```
 
-1. Set up a stack (C functions need it for local variables and calls)
-2. Jump to our C code
-3. Write characters directly to hardware
+No OS. No syscalls. No C runtime. Just you and the hardware.
 
 ### What we wrote
 
-Four files — see the code in [bare-metal-hello/](bare-metal-hello/) with
-inline comments explaining every line:
+Four files — see the source code in [bare-metal-hello/](bare-metal-hello/)
+with inline comments explaining every line. For build/run/debug instructions,
+see [bare-metal-hello/GUIDE.md](bare-metal-hello/GUIDE.md).
 
-**[entry.S](bare-metal-hello/entry.S)** — Assembly entry point (first
-instruction executed):
+Key compiler flags used in the Makefile:
+
+| Flag | Purpose |
+|------|---------|
+| `-march=rv64imac` | Target the RV64 instruction set with multiply, atomics, compressed |
+| `-mabi=lp64` | 64-bit longs and pointers, no hardware floating point |
+| `-ffreestanding` | Don't assume a hosted C environment (no libc) |
+| `-nostdlib` | Don't link the standard library or startup files |
+| `-mcmodel=medany` | Allow code at any address (not just near 0) |
+| `-g` | Include debug symbols (so GDB can show source lines) |
+
+
+### The linker script — deep dive
+
+The linker script ([linker.ld](bare-metal-hello/linker.ld)) does two
+fundamental jobs:
+
+**Job 1 — Set the entry point:**
+```
+ENTRY(_start)
+```
+This writes `_start`'s address into the ELF `e_entry` field. QEMU reads this
+ELF header and knows where to jump.
+
+**Job 2 — Control memory layout:**
+
+The `. = 0x80000000` line sets the **location counter** — the linker's cursor
+that tracks "where am I placing things right now."
 
 ```
-QEMU jumps to 0x80000000 → _start runs → sets stack pointer → calls main()
-```
+. = 0x80000000;     ← cursor starts here
 
-The stack pointer must be set before any C code runs. On RISC-V, the stack
-grows downward, so we point `sp` to the *top* of a 4KB stack region.
-
-**[main.c](bare-metal-hello/main.c)** — C code that writes to the UART:
-
-```c
-#define UART0_ADDR 0x10000000
-
-void uart_putc(char c) {
-    volatile char *uart = (volatile char *)UART0_ADDR;
-    *uart = c;
+.text : {
+    *(.text.entry)   ← place ALL .text.entry sections from ALL .o files first
+    *(.text .text.*)  ← then all normal code
 }
 ```
 
-This is **memory-mapped I/O**: the UART's transmit register is mapped to
-memory address `0x10000000`. Writing a byte there doesn't store it in RAM —
-it sends it out the serial port. QEMU then displays it on your terminal.
+The `*(.text.entry)` glob is the key trick. By placing `.text.entry` first,
+the linker guarantees `_start` lands at exactly `0x80000000` — the address
+QEMU jumps to. If you used just `*(.text)`, the order would be undefined and
+`_start` might not be first.
 
-The `volatile` keyword is critical: it tells the compiler "this memory
-location has side effects — don't optimize away repeated writes to it." Without
-`volatile`, the compiler might see multiple writes to the same address and
-decide only the last one matters, eating our entire string.
+**The stack is just reserved address space:**
+```
+. = ALIGN(16);
+. += 4096;          ← advance location counter by 4KB (no actual section)
+stack_top = .;      ← bind the symbol "stack_top" to the current address
+```
 
-**[linker.ld](bare-metal-hello/linker.ld)** — Memory layout:
+There's no `.stack` section — the linker just skips the cursor forward by
+4096 bytes, leaving that address range reserved. `stack_top` becomes a symbol
+whose value is just a number (an address). `entry.S` then loads that number
+into `sp`.
+
+Full memory layout:
 
 ```
 0x80000000  ┌──────────────┐
@@ -260,75 +293,132 @@ decide only the last one matters, eating our entire string.
             └──────────────┘
 ```
 
-The linker script ensures `.text.entry` (containing `_start`) is placed first
-at `0x80000000` — exactly where QEMU expects the kernel.
 
-**[Makefile](bare-metal-hello/Makefile)** — Build and run commands. Key flags:
+### entry.S — deep dive
 
-| Flag | Purpose |
-|------|---------|
-| `-march=rv64imac` | Target the RV64 instruction set with multiply, atomics, compressed |
-| `-mabi=lp64` | 64-bit longs and pointers, no hardware floating point |
-| `-ffreestanding` | Don't assume a hosted C environment (no libc) |
-| `-nostdlib` | Don't link the standard library or startup files |
-| `-mcmodel=medany` | Allow code at any address (not just near 0) |
-| `-g` | Include debug symbols (so GDB can show source lines) |
+Source: [entry.S](bare-metal-hello/entry.S)
 
-### Build bugs we hit
+**Why assembly and not C?**
 
-We encountered three build errors. These are common pitfalls in bare-metal
-development and worth understanding:
+Because C **requires** a valid stack to work. Even a function call like
+`call main` needs the stack for the return address. You can't set up the stack
+*in C* because you need a stack to run C in the first place. It's a
+chicken-and-egg problem — assembly breaks the cycle.
 
-#### Bug 1: Linker script syntax — `ALIGN` vs `. = ALIGN`
+**`la sp, stack_top` — how it works:**
 
-```
-riscv-none-elf-ld: cannot find ALIGN: No such file or directory
+`la` = **load address**. It's a pseudo-instruction that the assembler expands
+to two real instructions:
+
+```asm
+auipc sp, %hi(stack_top)     ← load upper 20 bits of address, PC-relative
+addi  sp, sp, %lo(stack_top)  ← add lower 12 bits
 ```
 
-Inside a linker script section, bare `ALIGN(16);` is not a directive — the
-linker interprets it as a filename. The correct syntax is `. = ALIGN(16);`,
-which means "advance the location counter to the next 16-byte boundary."
+The assembler/linker fills in the actual value of `stack_top` (from the linker
+script). After this, `sp` holds the address where `stack_top` ended up.
 
-The `.` (dot) in linker scripts is the **location counter** — it tracks where
-the linker is currently placing data. This is a concept unique to linker
-scripts and doesn't appear in C.
+**Stack grows downward — why?**
 
-#### Bug 2: 32-bit vs 64-bit ABI mismatch
+This is a CPU convention (not just RISC-V — ARM, x86, and most architectures
+do this). When you push something onto the stack:
 
 ```
-riscv-none-elf-ld: entry.o: ABI is incompatible with that of the selected emulation:
-  target emulation `elf64-littleriscv' does not match `elf32-littleriscv'
+sp = sp - 8         ← sp moves toward lower addresses
+memory[sp] = value
 ```
 
-The xPack linker is a multi-target binary that **defaults to 32-bit RISC-V**.
-Even though we compiled with `-march=rv64imac`, the linker doesn't infer the
-target from the object files.
-
-Fix: pass `-m elf64lriscv` to the linker explicitly. This is specific to
-multi-target toolchains like xPack; the upstream `riscv64-unknown-elf-ld`
-defaults to 64-bit.
-
-This kind of bug is a good example of why the tooling step exists —
-discovering these quirks now, with a trivial program, is much easier than
-discovering them while debugging a complex kernel.
-
-#### Bug 3: RWX segment warning
+So `stack_top` is the *highest* address in the stack region, and the stack
+expands downward toward lower addresses. If it grows too far, it runs into
+`.bss` or `.data` — a stack overflow. In bare metal there's no guard page,
+so it would silently corrupt your data.
 
 ```
-riscv-none-elf-ld: warning: hello.elf has a LOAD segment with RWX permissions
+0x80001000  stack_top  ← sp starts here
+0x80000FF8             ← after first push (sp -= 8)
+0x80000FF0             ← after second push
+   ...
+0x80000000             ← danger zone: hits your code!
 ```
 
-Our simple linker script puts everything in one segment that is readable,
-writable, and executable. A proper kernel should separate these (code =
-read+execute, data = read+write) for security. We'll fix this in Phase 1.
+**`wfi` — Wait For Interrupt:**
 
-### Running it
+If `main()` returns, there's nowhere to go. The CPU has no OS to return to —
+it would start executing whatever garbage bytes come after your binary in
+memory. So we spin forever with `wfi`, which halts the CPU core in a low-power
+state until an interrupt wakes it. Since we have no interrupts configured, it
+sleeps forever.
 
-```bash
-make run
-# Output: Hello from bobchouOS!
-# Press Ctrl-A then X to exit QEMU
+
+### main.c — deep dive
+
+Source: [main.c](bare-metal-hello/main.c)
+
+**Memory-mapped I/O — the core concept:**
+
+Normal memory: CPU writes a value → DRAM stores it → CPU reads it back later.
+
+Memory-mapped I/O: CPU writes a value → **the hardware device intercepts the
+bus transaction and does something** → nothing is actually stored in RAM.
+
+The CPU doesn't know the difference. From its perspective, it's just a store
+instruction to an address. The memory bus routes it to either DRAM or a device
+based on the address range:
+
 ```
+Address map on QEMU "virt":
+0x00000000 - 0x0FFFFFFF   → various peripherals (ROM, CLINT, PLIC...)
+0x10000000                 → UART0   ← writing here = sending a character
+0x80000000 - ...           → DRAM    ← your code lives here
+```
+
+**The `volatile` keyword — critical:**
+
+Without `volatile`:
+```c
+// Compiler sees: you're writing to the same address every loop iteration
+// Compiler thinks: "redundant writes, I'll optimize to just the last one"
+// Result: only the last character is sent, or none at all
+*uart = 'H';
+*uart = 'e';
+*uart = 'l';   // compiler might keep only this
+```
+
+With `volatile`:
+```c
+volatile char *uart = (volatile char *)0x10000000;
+// Compiler must emit a store instruction for EVERY write, in order
+// Because volatile says: "this has side effects you don't understand"
+```
+
+`volatile` also prevents **reordering** — without it, the compiler might
+rearrange your writes. For hardware registers, order always matters.
+
+**Why no `printf`?**
+
+`printf` ultimately calls `write()`, which is a Linux **syscall**. A syscall
+traps into the kernel and asks the OS to do something. Here, *you are* the
+kernel — there's no OS below you to call. You have to speak directly to the
+hardware. That's why we write to `0x10000000` directly.
+
+
+### What's missing vs a real OS kernel
+
+This is a complete bare-metal program, but a real OS would need more before
+calling `main()`:
+
+| Thing | Why needed |
+|-------|-----------|
+| Zero out `.bss` | C standard guarantees uninitialized globals are zero. QEMU may not guarantee this. You'd loop over `.bss` start→end and write zeros. |
+| Copy `.data` from ROM to RAM | On real hardware (not QEMU), initialized globals start in flash/ROM and must be copied to RAM at boot. |
+| Set up trap/interrupt vector | So the CPU knows where to jump on exceptions/interrupts instead of going to a random address. |
+| Multi-core parking | On real RISC-V boards, all cores start at `_start`. You must check the hart (core) ID and park all cores except core 0. |
+| Virtual memory (MMU setup) | For isolation between processes. Not needed for bare metal but essential for a real OS. |
+
+We legitimately skip all of this because QEMU's `virt` machine provides a
+clean simulated environment — zeroed memory, single core startup by default,
+no ROM-to-RAM copy needed. On real hardware, the startup path would be messier.
+We'll build these pieces as the project progresses.
 
 
 ## Step 4: Debugging with GDB
@@ -403,17 +493,10 @@ byte, store it to the UART address, advance, repeat. This is what bare-metal
 programming looks like — no layers of abstraction, just direct hardware
 interaction.
 
-### GDB pitfalls we hit
+### Practical GDB usage
 
-**Port conflict:** if a previous QEMU is still running, port 1234 is taken:
-```
-qemu-system-riscv64: -s: Failed to find an available port: Address already in use
-```
-Fix: `kill $(lsof -ti:1234)` or `pkill -f qemu-system-riscv`
-
-**ELF loading in batch mode:** xPack GDB 16.3 silently ignores the positional
-file argument in `--batch` mode. Use `-ex "file hello.elf"` instead. See
-[bare-metal-hello/GUIDE.md](bare-metal-hello/GUIDE.md) for full details.
+For detailed instructions on running GDB with QEMU (commands, common pitfalls,
+port conflicts, batch mode), see [bare-metal-hello/GUIDE.md](bare-metal-hello/GUIDE.md).
 
 
 ## Summary
@@ -427,8 +510,8 @@ What we accomplished:
 | Debugger | `riscv-none-elf-gdb` 16.3 (bundled with compiler) | `/opt/riscv/bin/` |
 | Proof of life | "Hello from bobchouOS!" via bare-metal UART output | `bare-metal-hello/` |
 
-The complete bare-metal hello world exercise (with source code and a detailed
-run guide) is in [bare-metal-hello/](bare-metal-hello/).
+The complete bare-metal hello world exercise (source code, build/run/debug
+guide) is in [bare-metal-hello/](bare-metal-hello/).
 
 ### What to pay attention to going forward
 
