@@ -21,6 +21,20 @@ _start:
     # Load the address of the top of our stack into sp.
     # The stack grows downward on RISC-V, so we point sp to the *top*
     # of the stack region (defined in the linker script).
+    #
+    # How does this file know about "stack_top"? It doesn't — yet.
+    # The assembler generates a placeholder here ("I need the address of
+    # stack_top"), and the linker fills it in later. The linker script
+    # defines stack_top = . (the current address after the 4KB stack
+    # region), and the linker matches that definition to this reference.
+    # Same mechanism as calling a function defined in another .c file.
+    #
+    # Why assembly? Every compiled C function uses sp implicitly — the
+    # compiler generates prologue/epilogue code (addi sp, sp, -N / sd ra,
+    # ...) that assumes sp already points to valid memory. Without this
+    # line, sp contains garbage from power-on and the first C function
+    # call writes to a random address. C can't set up its own stack
+    # (chicken-and-egg), so assembly breaks the cycle.
     la sp, stack_top
 
     # Jump to our C main function.
