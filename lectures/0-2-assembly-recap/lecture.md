@@ -1496,6 +1496,24 @@ foundation from this lecture will make that straightforward.
 
 ---
 
+## Exercises
+
+Four hands-on exercises in the `exercises/` directory let you practice what
+you've learned. See `exercises/GUIDE.md` for instructions.
+
+| # | Function | What it tests |
+|---|----------|--------------|
+| 1 | `add_three(a, b, c)` | Arithmetic, calling convention basics |
+| 2 | `strlen(s)` | Loop, byte load, pointer walking |
+| 3 | `max_array(arr, n)` | Loop, doubleword load, conditional branch |
+| 4 | `sum_strlen(s1, s2)` | Prologue/epilogue, `call`, saving registers |
+
+Exercises 1-3 are leaf functions (no prologue needed). Exercise 4 calls
+`strlen` twice, requiring the full prologue/epilogue pattern from Example 2.
+
+
+---
+
 ## Quick Reference Card
 
 ### Registers
