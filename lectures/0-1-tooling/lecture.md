@@ -372,6 +372,59 @@ Address map on QEMU "virt":
 0x80000000 - ...           → DRAM    ← your code lives here
 ```
 
+> **What is UART?**
+>
+> UART stands for **Universal Asynchronous Receiver/Transmitter**. It's
+> one of the simplest hardware communication interfaces — essentially a
+> serial port.
+>
+> In a physical setup, UART connects two devices with just two wires:
+> one for sending (TX) and one for receiving (RX). Data is sent one bit
+> at a time at a pre-agreed speed (the "baud rate," e.g., 115200 bits
+> per second). There's no shared clock signal between the two sides —
+> that's the "asynchronous" part. Each side just trusts the other to
+> send bits at the agreed rate.
+>
+> ```
+> ┌──────────┐    TX ───────→ RX    ┌──────────┐
+> │  Device A │                      │  Device B │
+> │  (CPU)    │    RX ←─────── TX    │ (Terminal)│
+> └──────────┘                      └──────────┘
+> ```
+>
+> The **16550 UART** is a specific chip design (originally from the
+> 1980s) that became the de facto standard for serial ports in PCs. It
+> exposes a handful of 8-bit **registers** at consecutive memory
+> addresses. The most important ones:
+>
+> | Register | Offset | What it does |
+> |----------|--------|-------------|
+> | THR (Transmit Holding Register) | +0 | Write a byte here → it gets sent out the TX wire |
+> | RHR (Receive Holding Register) | +0 | Read a byte here ← it arrived from the RX wire |
+> | LSR (Line Status Register) | +5 | Status bits: "TX ready for next byte", "RX has data", etc. |
+>
+> THR and RHR share the same address — a write goes to THR (transmit),
+> a read goes to RHR (receive). The hardware knows which you meant by
+> whether the CPU performed a store or a load.
+>
+> On QEMU's `virt` machine, the 16550 UART is mapped at address
+> `0x10000000`. When we write a byte to that address, QEMU's emulated
+> UART "transmits" it — which in practice means printing it to your
+> terminal. When we read from offset +5 (the LSR at `0x10000005`), we
+> can check if the device is ready for the next byte.
+>
+> In this lecture, we simplify by just writing to `0x10000000` without
+> checking the status register. This works on QEMU because the emulated
+> UART is always ready instantly. On real hardware, you'd check LSR
+> first to avoid sending data faster than the wire can carry it. We'll
+> build a proper UART driver with status checking and interrupt support
+> in Phase 1.
+>
+> The key takeaway: UART is just a few hardware registers at known
+> memory addresses. "Writing to the serial console" means storing a byte
+> to an address. That's it — no protocol stack, no driver framework,
+> just a store instruction.
+
 **The `volatile` keyword — critical:**
 
 Without `volatile`:
