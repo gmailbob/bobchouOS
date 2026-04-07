@@ -268,6 +268,81 @@ UART hardware transmits bytes        ← QEMU shows them in your terminal
 
 No OS. No syscalls. No C runtime. Just you and the hardware.
 
+> **How does the ELF binary get into memory?**
+>
+> You might wonder: if there's no OS on the target, who loads our
+> program? The answer depends on the environment:
+>
+> **On QEMU:** QEMU itself loads it. QEMU is a normal Linux process on
+> your host machine. When you pass `-kernel program.elf`, QEMU opens
+> the file with regular host OS syscalls, parses the ELF headers to
+> find where each section goes, copies the contents into the emulated
+> machine's RAM (which is just a `malloc`'d buffer in the QEMU
+> process), sets the emulated CPU's program counter to `0x80000000`,
+> and starts executing. "Loading at address `0x80000000`" just means
+> writing bytes to an offset in that buffer.
+>
+> **On real hardware,** a chain of increasingly capable software does
+> the loading, each stage handing off to the next:
+>
+> ```
+> Power on
+>   │  CPU starts at a hardwired address (set by silicon design)
+>   ▼
+> ROM firmware (burned into chip at factory)
+>   │  Tiny code that knows how to read from flash/SD card
+>   │  Loads the bootloader into RAM
+>   ▼
+> Bootloader (U-Boot / OpenSBI)
+>   │  More capable — understands filesystems, ELF format
+>   │  Loads the kernel into RAM at the right address
+>   │  Sets up minimal hardware (DRAM controller, clocks)
+>   ▼
+> Your OS kernel
+>   │  Takes over from here
+>   ▼
+> ```
+>
+> Each stage is effectively "the OS" for the next stage. The ROM
+> firmware is the ultimate answer to "but who loads the loader?" — it's
+> not loaded at all, it's physically part of the hardware. ROM
+> (Read-Only Memory) is a small chip (or a dedicated region on the same
+> silicon die) whose contents are determined at manufacturing time —
+> the bits are baked into the silicon or flashed once into a one-time-
+> programmable memory. The CPU sees ROM as just another address range
+> on the memory bus, no different from RAM from its perspective. It
+> fetches instructions from address `0x1000`, and the memory bus routes
+> that read to the ROM chip instead of DRAM. A typical boot ROM is
+> tiny — 32 to 128KB — just enough code to initialize the hardware and
+> load the next stage from flash or SD card.
+>
+> ```
+> ┌─────────────────────────────────────┐
+> │          SoC (System on Chip)       │
+> │                                     │
+> │   ┌───────┐  ┌───────┐  ┌───────┐  │
+> │   │  CPU  │  │  ROM  │  │  RAM  │  │
+> │   │ cores │  │ 64KB  │  │       │  │
+> │   └───┬───┘  └───┬───┘  └───┬───┘  │
+> │       └──────────┴──────────┘       │
+> │             memory bus              │
+> └─────────────────────────────────────┘
+> ```
+>
+> On QEMU, this entire chain is simulated. QEMU's internal firmware
+> lives at address `0x1000` and does minimal setup before jumping to
+> `0x80000000`. That's why GDB shows `pc = 0x1000` at startup (Step 4
+> below) — that's QEMU's built-in firmware running, before it reaches
+> our `_start`. The `-bios none` flag tells QEMU to skip this firmware
+> and jump directly to our code, but behind the scenes QEMU still does
+> the ELF loading itself.
+>
+> We'll revisit the boot sequence in more detail in Phase 1, where
+> we'll deal with RISC-V privilege modes (M-mode → S-mode) and what
+> OpenSBI does for us. For now, just know: something always puts your
+> code in memory before `_start` runs — on QEMU, it's the emulator
+> itself.
+
 ### What we wrote
 
 Four files — see the source code in [bare-metal-hello/](bare-metal-hello/)
