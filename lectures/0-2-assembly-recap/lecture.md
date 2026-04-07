@@ -783,6 +783,43 @@ If you don't care about the distinction (e.g., loading an ASCII character
 that's always 0-127), either works. **When in doubt, use the unsigned variant.**
 
 
+### `la` vs `ld` — don't confuse these
+
+You'll see both `la` and `ld` in our code, and they look similar but do
+completely different things:
+
+```asm
+la  sp, stack_top       # sp = address of stack_top  (no memory read)
+ld  a0, 0(a1)           # a0 = value at address a1   (reads from memory)
+```
+
+`la` = "**l**oad **a**ddress" — computes the address of a symbol and
+puts the address itself into the register. No memory access happens.
+It expands to `auipc` + `addi`, which just do arithmetic on the program
+counter.
+
+`ld` = "**l**oad **d**oubleword" — goes to a memory address and reads
+the 8 bytes stored there.
+
+Concrete example — suppose `stack_top` ends up at address `0x80001000`,
+and the memory at that address contains `0xDEADBEEF`:
+
+```
+la  sp, stack_top       →  sp = 0x80001000       (the address itself)
+ld  sp, 0(a1)           →  sp = 0xDEADBEEF       (the value stored there)
+```
+
+In C terms:
+```c
+la  sp, stack_top       // sp = &stack_top     (take the address)
+ld  a0, 0(a1)           // a0 = *a1            (dereference — read the value)
+```
+
+In our `entry.S`, we use `la sp, stack_top` because we want `sp` to
+*be* the address — the stack pointer should hold the address of the top
+of the stack, not whatever happens to be stored there.
+
+
 ### Branches (conditional jumps)
 
 These use **pattern 5** — two registers + a label.
@@ -1432,6 +1469,48 @@ riscv-none-elf-nm my_program.elf
 
 Shows every symbol and its address. Useful for verifying that `_start` is at
 `0x80000000`.
+
+### How symbols become addresses
+
+When you write `la sp, stack_top` or `call main`, you're referencing
+symbols by name. But the CPU doesn't know names — it only understands
+numbers. So how does the name become an address?
+
+It's a **two-step process**:
+
+1. **The assembler** expands `la sp, stack_top` into `auipc` + `addi`,
+   but doesn't know `stack_top`'s final address yet. It leaves a
+   **placeholder** (called a "relocation entry") in the `.o` file:
+   "the linker should fill in `stack_top`'s address here."
+
+2. **The linker** processes the linker script, assigns every section
+   and symbol a final address, then patches every placeholder with the
+   real value. After linking, the `auipc` + `addi` instructions encode
+   the address `0x80001080` (or wherever `stack_top` ended up) as
+   constants baked directly into the instruction bits.
+
+At runtime, the CPU just does arithmetic on those baked-in constants —
+no lookup, no table, no memory read. The symbol name is gone; only the
+number remains.
+
+This is the same mechanism for every symbol reference:
+- `call main` → linker fills in `main`'s address
+- `la sp, stack_top` → linker fills in `stack_top`'s address
+- `j spin` → assembler can usually resolve this within the same file
+  (same `.o`), but cross-file jumps go through the linker too
+
+That's also why `nm` works — it just reads the linker's symbol table,
+which maps names to final addresses:
+
+```
+$ riscv-none-elf-nm program.elf
+80000000 T _start
+80000034 T main
+80001080 B stack_top
+```
+
+The `T` means the symbol is in `.text` (code), `B` means `.bss`
+(uninitialized data). These are the addresses the linker assigned.
 
 **Read raw hex:**
 

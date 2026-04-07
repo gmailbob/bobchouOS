@@ -22,6 +22,10 @@ The goal is not to build anything production-ready. It's to deeply understand ho
 
 RISC-V's clean design means more time learning OS concepts and less time wrestling with ISA complexity. The privileged architecture (Machine / Supervisor / User modes) maps directly to how operating systems are structured in textbooks.
 
+**A bit of history:** RISC-V was designed at UC Berkeley starting around 2010 by Krste Asanović and David Patterson (co-author of the classic *Computer Organization and Design* textbook). Unlike ARM or x86, RISC-V is an open ISA — anyone can implement it without licensing fees. This openness is why it has strong tooling support (GCC, LLVM, QEMU) and a thriving ecosystem despite being relatively young. The name stands for the fifth generation of RISC research projects at Berkeley.
+
+Our primary reference, **xv6**, was originally written for x86 by MIT's PDOS group (Frans Kaashoek, Robert Morris, Nickolai Zeldovich) in 2006 as a teaching reimplementation of Unix v6 (1975) — hence the name "x86 version of v6." Around 2019, MIT ported xv6 to RISC-V for their renamed 6.S081 course, for the same reasons we chose it: too much class time was spent fighting x86 quirks (real mode → protected mode → long mode, segmentation, A20 line) instead of learning OS concepts. The original x86 version (`mit-pdos/xv6-public`) is archived; the RISC-V port (`mit-pdos/xv6-riscv`) is actively maintained and what we reference throughout this project.
+
 ### Why QEMU?
 
 - **Zero hardware risk** — no bricking, no serial cable debugging

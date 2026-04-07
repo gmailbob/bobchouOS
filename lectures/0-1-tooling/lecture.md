@@ -140,6 +140,60 @@ vendor), and drops the `64` because the toolchain is multi-target (supports
 both rv32 and rv64 via multilib). Just use the correct prefix in your Makefile
 and everything works the same.
 
+> **Where did this compiler come from? (The bootstrapping problem)**
+>
+> We just installed a cross-compiler — a program that runs on ARM64 but
+> produces RISC-V code. That compiler was itself compiled by *another*
+> compiler. Which was compiled by another. How does this chain start?
+>
+> It goes all the way back to the 1970s. The very first C compiler
+> (Dennis Ritchie, Bell Labs) was written in **B**, an earlier language.
+> The B compiler was written in **assembly**. The assembler was written
+> in **machine code**. And machine code is just numbers — entered by
+> hand via front-panel switches on a PDP-7.
+>
+> ```
+> Hand-toggled machine code
+>   → assembler (written in machine code)
+>     → B compiler (written in assembly)
+>       → first C compiler (written in B)
+>         → C compiler rewritten in C, compiled by the B-based one
+>           → now it compiles itself ← "self-hosting"
+> ```
+>
+> That last step is the key. Once a C compiler can **compile its own
+> source code**, it's self-sustaining. You no longer need the earlier
+> tools. This is called **bootstrapping** — the compiler pulls itself up
+> by its own bootstraps.
+>
+> Every compiler since then inherits from this chain. When GCC was
+> created (Richard Stallman, 1987), he compiled it with an existing Unix
+> C compiler. When Clang/LLVM was created, they compiled it with GCC.
+> Nobody starts from zero — you always borrow an existing compiler to
+> build the next one.
+>
+> **Cross-compilation** adds one more twist. Our `riscv-none-elf-gcc`
+> was built like this:
+>
+> 1. Start with a working GCC on ARM64 (compiles ARM64 → ARM64)
+> 2. Use it to compile GCC's source code, configured with
+>    `--target=riscv-none-elf`
+> 3. The result is an ARM64 binary that *outputs* RISC-V instructions
+>
+> The cross-compiler is just a normal ARM64 program. It happens to emit
+> RISC-V code instead of ARM64 code because the **target architecture**
+> is a build-time configuration option in GCC — the compilation and
+> optimization logic is the same, only the final "emit instructions"
+> backend differs.
+>
+> Nobody wrote a RISC-V compiler from scratch. GCC has been a
+> **retargetable** compiler since its inception — adding RISC-V support
+> meant writing a new backend ("here's how to turn GCC's internal
+> representation into RISC-V instructions"), contributed primarily by
+> engineers at SiFive (a RISC-V chip company) around 2017-2018. The
+> frontend (parsing C), middle (optimizations), and infrastructure
+> (40+ years of work) were already there.
+
 
 ## Step 2: Installing QEMU
 
