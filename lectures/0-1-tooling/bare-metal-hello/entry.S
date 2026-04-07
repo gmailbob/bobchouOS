@@ -31,10 +31,10 @@ _start:
     #
     # Why assembly? Every compiled C function uses sp implicitly — the
     # compiler generates prologue/epilogue code (addi sp, sp, -N / sd ra,
-    # ...) that assumes sp already points to valid memory. Without this
-    # line, sp contains garbage from power-on and the first C function
-    # call writes to a random address. C can't set up its own stack
-    # (chicken-and-egg), so assembly breaks the cycle.
+    # ...) that assumes sp already points to valid memory. Without a
+    # valid sp, the first C function call writes to a random address.
+    # C can't set up its own stack (chicken-and-egg), so assembly
+    # breaks the cycle.
     la sp, stack_top
 
     # Jump to our C main function.
