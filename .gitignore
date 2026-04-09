@@ -3,5 +3,8 @@
 *.elf
 *.bin
 
+# Documents
+*.pdf
+
 # Claude Code local settings
 .claude/
