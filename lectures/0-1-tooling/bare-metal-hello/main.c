@@ -30,8 +30,8 @@
  * hardware register. Every other printing function (uart_puts, kprintf
  * in the real kernel) will ultimately call something like this.
  */
-void uart_putc(char c)
-{
+void
+uart_putc(char c) {
     volatile char *uart = (volatile char *)UART0_ADDR;
     *uart = c;
 }
@@ -39,8 +39,8 @@ void uart_putc(char c)
 /*
  * uart_puts — Send a null-terminated string to the serial console.
  */
-void uart_puts(const char *s)
-{
+void
+uart_puts(const char *s) {
     while (*s) {
         uart_putc(*s);
         s++;
@@ -53,7 +53,7 @@ void uart_puts(const char *s)
  * In a real OS, main() would initialize subsystems (memory, interrupts,
  * processes) and then start the scheduler. Here, we just say hello and halt.
  */
-void main(void)
-{
+void
+main(void) {
     uart_puts("Hello from bobchouOS!\n");
 }

@@ -18,8 +18,7 @@
  * Replaced by the proper UART driver in Round 2.
  */
 static void
-uart_putc_raw(char c)
-{
+uart_putc_raw(char c) {
     /* TODO: Write character c to the UART0 address.
      *
      * Hint: cast UART0 to a volatile uint8 pointer and dereference it.
@@ -29,16 +28,14 @@ uart_putc_raw(char c)
 
 /* Print a null-terminated string using the raw UART write. */
 static void
-uart_puts_raw(const char *s)
-{
+uart_puts_raw(const char *s) {
     /* TODO: Loop over each character in s and call uart_putc_raw().
      * Stop when you hit the null terminator '\0'.
      */
 }
 
 void
-kmain(void)
-{
+kmain(void) {
     /* TODO: Print a message to prove the boot path works.
      *
      * Call uart_puts_raw() with a string like "hello from bobchouOS\n".

@@ -1,0 +1,34 @@
+---
+# bobchouOS C formatting style
+# Linux kernel style with minor tweaks.
+#
+# Run:    clang-format -i kernel/**/*.c kernel/**/*.h
+# Check:  clang-format --dry-run --Werror kernel/**/*.c kernel/**/*.h
+
+BasedOnStyle: LLVM
+
+# Braces: same line everywhere (including functions)
+BreakBeforeBraces: Attach
+
+# Return type on its own line for function definitions
+AlwaysBreakAfterReturnType: TopLevelDefinitions
+
+# Indent
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 80
+
+# Pointers attach to name: void *ptr, not void* ptr
+PointerAlignment: Right
+
+# No space inside casts: (uint8 *)p, not (uint8 *) p
+SpaceAfterCStyleCast: false
+
+# Single-line bodies allowed for short statements
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+
+# Sort includes
+SortIncludes: false

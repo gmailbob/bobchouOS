@@ -1,8 +1,7 @@
 #include "types.h"
 
 void *
-memset(void *dst, int val, uint64 n)
-{
+memset(void *dst, int val, uint64 n) {
     uint8 *p = (uint8 *)dst;
     while (n--)
         *p++ = (uint8)val;
@@ -10,8 +9,7 @@ memset(void *dst, int val, uint64 n)
 }
 
 void *
-memcpy(void *dst, const void *src, uint64 n)
-{
+memcpy(void *dst, const void *src, uint64 n) {
     uint8 *d = (uint8 *)dst;
     const uint8 *s = (const uint8 *)src;
     while (n--)

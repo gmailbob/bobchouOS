@@ -6,10 +6,10 @@
  */
 
 /* Type definitions — same as xv6 */
-typedef unsigned char  uint8;
+typedef unsigned char uint8;
 typedef unsigned short uint16;
-typedef unsigned int   uint32;
-typedef unsigned long  uint64;
+typedef unsigned int uint32;
+typedef unsigned long uint64;
 
 /* ─────────────────────────────────────────────────────────────────────
  * Exercise 1: bitfield_extract / bitfield_insert
@@ -31,12 +31,14 @@ typedef unsigned long  uint64;
  *       Review Part 7 of the lecture (bitwise operations).
  * ───────────────────────────────────────────────────────────────────── */
 
-uint64 bitfield_extract(uint64 val, int start, int width) {
+uint64
+bitfield_extract(uint64 val, int start, int width) {
     /* TODO: implement */
     return 0;
 }
 
-uint64 bitfield_insert(uint64 val, int start, int width, uint64 field) {
+uint64
+bitfield_insert(uint64 val, int start, int width, uint64 field) {
     /* TODO: implement */
     return 0;
 }
@@ -59,12 +61,14 @@ uint64 bitfield_insert(uint64 val, int start, int width, uint64 field) {
  *       Review Part 4 (pointer casting, void *) and Part 5 (arrays).
  * ───────────────────────────────────────────────────────────────────── */
 
-void *my_memset(void *dst, int val, uint64 n) {
+void *
+my_memset(void *dst, int val, uint64 n) {
     /* TODO: implement */
     return dst;
 }
 
-void *my_memcpy(void *dst, const void *src, uint64 n) {
+void *
+my_memcpy(void *dst, const void *src, uint64 n) {
     /* TODO: implement */
     return dst;
 }
@@ -97,7 +101,8 @@ struct node {
     struct node *next;
 };
 
-void sorted_insert(struct node **head_ptr, struct node *new_node) {
+void
+sorted_insert(struct node **head_ptr, struct node *new_node) {
     /* TODO: implement */
 }
 
@@ -122,7 +127,8 @@ void sorted_insert(struct node **head_ptr, struct node *new_node) {
  *       Review Part 7 (bit extraction) and the hex table.
  * ───────────────────────────────────────────────────────────────────── */
 
-void format_hex(char *buf, uint64 val) {
+void
+format_hex(char *buf, uint64 val) {
     /* TODO: implement */
     buf[0] = '\0';
 }

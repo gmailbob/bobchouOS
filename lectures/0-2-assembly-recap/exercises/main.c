@@ -17,16 +17,19 @@ long sum_strlen(const char *s1, const char *s2);
 
 /* ── Minimal UART output ── */
 
-static void uart_putc(char c) {
+static void
+uart_putc(char c) {
     *UART_BASE = c;
 }
 
-static void uart_puts(const char *s) {
+static void
+uart_puts(const char *s) {
     while (*s)
         uart_putc(*s++);
 }
 
-static void uart_putnum(long n) {
+static void
+uart_putnum(long n) {
     if (n < 0) {
         uart_putc('-');
         n = -n;
@@ -39,9 +42,10 @@ static void uart_putnum(long n) {
 /* ── Test infrastructure ── */
 
 static int tests_passed = 0;
-static int tests_total  = 0;
+static int tests_total = 0;
 
-static void check(const char *name, long got, long expected) {
+static void
+check(const char *name, long got, long expected) {
     tests_total++;
     if (got == expected) {
         tests_passed++;
@@ -62,55 +66,60 @@ static void check(const char *name, long got, long expected) {
 
 /* ── Test cases ── */
 
-static void test_add_three(void) {
+static void
+test_add_three(void) {
     uart_puts("\n--- Exercise 1: add_three ---\n");
-    check("add_three(1, 2, 3)",        add_three(1, 2, 3),        6);
-    check("add_three(0, 0, 0)",        add_three(0, 0, 0),        0);
-    check("add_three(-1, 1, 0)",       add_three(-1, 1, 0),       0);
-    check("add_three(100, 200, 300)",  add_three(100, 200, 300),  600);
-    check("add_three(-10, -20, -30)",  add_three(-10, -20, -30), -60);
+    check("add_three(1, 2, 3)", add_three(1, 2, 3), 6);
+    check("add_three(0, 0, 0)", add_three(0, 0, 0), 0);
+    check("add_three(-1, 1, 0)", add_three(-1, 1, 0), 0);
+    check("add_three(100, 200, 300)", add_three(100, 200, 300), 600);
+    check("add_three(-10, -20, -30)", add_three(-10, -20, -30), -60);
 }
 
-static void test_strlen(void) {
+static void
+test_strlen(void) {
     uart_puts("\n--- Exercise 2: strlen ---\n");
-    check("strlen(\"\")",             strlen(""),             0);
-    check("strlen(\"H\")",           strlen("H"),            1);
-    check("strlen(\"Hi\")",          strlen("Hi"),           2);
-    check("strlen(\"Hello\")",       strlen("Hello"),        5);
-    check("strlen(\"bobchouOS\")",   strlen("bobchouOS"),    9);
+    check("strlen(\"\")", strlen(""), 0);
+    check("strlen(\"H\")", strlen("H"), 1);
+    check("strlen(\"Hi\")", strlen("Hi"), 2);
+    check("strlen(\"Hello\")", strlen("Hello"), 5);
+    check("strlen(\"bobchouOS\")", strlen("bobchouOS"), 9);
 }
 
-static void test_max_array(void) {
+static void
+test_max_array(void) {
     uart_puts("\n--- Exercise 3: max_array ---\n");
 
     long a1[] = {42};
-    check("max_array([42], 1)",         max_array(a1, 1),   42);
+    check("max_array([42], 1)", max_array(a1, 1), 42);
 
     long a2[] = {3, 7, 2};
-    check("max_array([3,7,2], 3)",      max_array(a2, 3),   7);
+    check("max_array([3,7,2], 3)", max_array(a2, 3), 7);
 
     long a3[] = {10, 5, 8, 3, 1};
-    check("max_array([10,5,8,3,1], 5)", max_array(a3, 5),   10);
+    check("max_array([10,5,8,3,1], 5)", max_array(a3, 5), 10);
 
     long a4[] = {1, 2, 3, 4, 5};
-    check("max_array([1,2,3,4,5], 5)",  max_array(a4, 5),   5);
+    check("max_array([1,2,3,4,5], 5)", max_array(a4, 5), 5);
 
     long a5[] = {-3, -1, -7, -2};
-    check("max_array([-3,-1,-7,-2], 4)", max_array(a5, 4),  -1);
+    check("max_array([-3,-1,-7,-2], 4)", max_array(a5, 4), -1);
 }
 
-static void test_sum_strlen(void) {
+static void
+test_sum_strlen(void) {
     uart_puts("\n--- Exercise 4: sum_strlen ---\n");
-    check("sum_strlen(\"\", \"\")",           sum_strlen("", ""),           0);
-    check("sum_strlen(\"Hi\", \"\")",         sum_strlen("Hi", ""),         2);
-    check("sum_strlen(\"\", \"World\")",      sum_strlen("", "World"),      5);
-    check("sum_strlen(\"Hi\", \"World\")",    sum_strlen("Hi", "World"),    7);
-    check("sum_strlen(\"abc\", \"defgh\")",   sum_strlen("abc", "defgh"),   8);
+    check("sum_strlen(\"\", \"\")", sum_strlen("", ""), 0);
+    check("sum_strlen(\"Hi\", \"\")", sum_strlen("Hi", ""), 2);
+    check("sum_strlen(\"\", \"World\")", sum_strlen("", "World"), 5);
+    check("sum_strlen(\"Hi\", \"World\")", sum_strlen("Hi", "World"), 7);
+    check("sum_strlen(\"abc\", \"defgh\")", sum_strlen("abc", "defgh"), 8);
 }
 
 /* ── Entry point ── */
 
-void main(void) {
+void
+main(void) {
     uart_puts("=== Lecture 0-2: Assembly Exercises ===\n");
 
     test_add_three();
