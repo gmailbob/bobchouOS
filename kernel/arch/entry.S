@@ -20,31 +20,31 @@ _start:
     # Read this hart's ID from the mhartid CSR.
     # If it's not hart 0, jump to the 'park' label.
     #
-    # TODO: read mhartid into a register
-    # TODO: branch to 'park' if not zero
+    csrr t0, mhartid
+    bnez t0, park
 
     # ---- Step 2: Zero BSS ----
     # Load _bss_start and _bss_end from linker script symbols.
     # Loop: store 8 bytes of zeros at a time until start >= end.
     #
-    # TODO: load _bss_start address into a register
-    # TODO: load _bss_end address into a register
+    la t0, _bss_start
+    la t1, _bss_end
 bss_clear:
-    # TODO: if start >= end, jump to bss_done
-    # TODO: store zero (8 bytes) at the current address
-    # TODO: advance pointer by 8
-    # TODO: jump back to bss_clear
+    bge t0, t1, bss_done
+    sd zero, 0(t0)
+    addi t0, t0, 8
+    j bss_clear
 bss_done:
 
     # ---- Step 3: Set up stack ----
     # Load the stack_top symbol (defined in linker.ld) into sp.
     #
-    # TODO: load stack_top into sp
+    la sp, stack_top
 
     # ---- Step 4: Jump to C ----
     # Call kmain(). If it returns, fall through to spin.
     #
-    # TODO: call kmain
+    call kmain
 
 spin:
     wfi

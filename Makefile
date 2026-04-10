@@ -13,13 +13,13 @@ LD      = $(CROSS)ld
 OBJDUMP = $(CROSS)objdump
 NM      = $(CROSS)nm
 
-CFLAGS  = -march=rv64imac -mabi=lp64 \
+CFLAGS  = -march=rv64imac_zicsr -mabi=lp64 \
           -ffreestanding -nostdlib -mcmodel=medany \
           -Wall -O2 -g \
           -fno-strict-aliasing \
           -I kernel/include -I kernel
 
-ASFLAGS = -march=rv64imac -mabi=lp64 -g
+ASFLAGS = -march=rv64imac_zicsr -mabi=lp64 -g
 
 TARGET  = kernel.elf
 

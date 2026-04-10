@@ -19,29 +19,21 @@
  */
 static void
 uart_putc_raw(char c) {
-    /* TODO: Write character c to the UART0 address.
-     *
-     * Hint: cast UART0 to a volatile uint8 pointer and dereference it.
-     * This is the same pattern from Phase 0's bare-metal hello.
-     */
+    volatile uint8 *port = (volatile uint8 *)UART0;
+    *port = c;
 }
 
 /* Print a null-terminated string using the raw UART write. */
 static void
 uart_puts_raw(const char *s) {
-    /* TODO: Loop over each character in s and call uart_putc_raw().
-     * Stop when you hit the null terminator '\0'.
-     */
+    const char *c = s;
+    while (*c)
+        uart_putc_raw(*c++);
 }
 
 void
 kmain(void) {
-    /* TODO: Print a message to prove the boot path works.
-     *
-     * Call uart_puts_raw() with a string like "hello from bobchouOS\n".
-     * If you see this on the QEMU console, entry.S and the linker script
-     * are working correctly.
-     */
+    uart_puts_raw("hello from bobchouOS\n");
 
     /* Nothing else to do — halt. */
     for (;;)
