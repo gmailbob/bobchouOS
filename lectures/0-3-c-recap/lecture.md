@@ -93,12 +93,12 @@ Each `.c` file is called a **translation unit** — the compiler processes
 it in isolation, with no knowledge of what's in other `.c` files.
 
 ```
-main.c  ──→ gcc ──→ main.o
-uart.c  ──→ gcc ──→ uart.o
-proc.c  ──→ gcc ──→ proc.o
-                       │
-                       ▼  linker (ld)
-                    kernel.elf
+main.c  ──→ gcc ──→ main.o ─┐
+uart.c  ──→ gcc ──→ uart.o ─┤
+proc.c  ──→ gcc ──→ proc.o ─┤
+                            │
+                            ▼  linker (ld)
+                         kernel.elf
 ```
 
 (The command is called `ld`, which stands for **Link eDitor** — a name
@@ -1275,9 +1275,9 @@ int grid[2][3] = {
 
 Memory layout:
 ```
-Address:  base   +4   +8  +12  +16  +20
-Value:      1    2    3    4    5    6
-            ─── row 0 ──  ─── row 1 ──
+Address:  base  +4   +8   +12  +16  +20
+Value:       1   2    3     4    5    6
+          ─── row 0 ───   ──── row 1 ──
 ```
 
 `grid[r][c]` is at offset `(r * num_cols + c) * sizeof(int)` from the
