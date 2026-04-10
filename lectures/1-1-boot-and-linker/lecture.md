@@ -1195,7 +1195,7 @@ now that we're building a real kernel:
 
 | Flag | Purpose |
 |------|---------|
-| `-march=rv64imac` | Target RISC-V 64-bit with Integer, Multiply, Atomics, Compressed extensions |
+| `-march=rv64imac_zicsr` | Target RISC-V 64-bit with Integer, Multiply, Atomics, Compressed extensions, plus Zicsr (CSR instructions like `csrr`). Newer toolchains require Zicsr to be listed explicitly. |
 | `-mabi=lp64` | Long and Pointer are 64-bit; no hardware floating-point |
 | `-ffreestanding` | Don't assume a hosted environment (no libc, no `main()` convention) |
 | `-nostdlib` | Don't link the standard C library |
