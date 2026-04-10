@@ -1,0 +1,70 @@
+/*
+ * uart.c — 16550 UART driver for QEMU virt machine.
+ *
+ * Phase 1: polling only, no interrupts.
+ * See Lecture 1-2 for the register map and initialization sequence.
+ */
+
+#include "types.h"
+
+/* ---- Hardware constants ---- */
+
+#define UART0 0x10000000UL
+
+/* Register offsets */
+#define RHR 0 /* Receive Holding Register  (read,  DLAB=0) */
+#define THR 0 /* Transmit Holding Register (write, DLAB=0) */
+#define IER 1 /* Interrupt Enable Register (DLAB=0) */
+#define FCR 2 /* FIFO Control Register     (write) */
+#define LCR 3 /* Line Control Register */
+#define LSR 5 /* Line Status Register      (read)  */
+
+/* LSR flags */
+#define LSR_RX_READY (1 << 0) /* Data available in RHR */
+#define LSR_TX_IDLE (1 << 5)  /* THR is empty */
+
+/* ---- Register access helpers ---- */
+
+static inline uint8
+uart_read_reg(uint32 reg) {
+    return *(volatile uint8 *)(UART0 + reg);
+}
+
+static inline void
+uart_write_reg(uint32 reg, uint8 val) {
+    *(volatile uint8 *)(UART0 + reg) = val;
+}
+
+/* ---- Public API ---- */
+
+/*
+ * Initialize the 16550 UART.
+ *
+ * Sequence: disable interrupts, set baud rate to 38400 (divisor 3),
+ * configure 8N1 data format, enable and reset FIFOs.
+ * Refer to Lecture 1-2 Part 4 for the step-by-step explanation.
+ */
+void
+uart_init(void) {
+    /* TODO: implement the initialization sequence */
+}
+
+/*
+ * Transmit one character.
+ * Spin until THR is empty (check LSR), then write to THR.
+ */
+void
+uart_putc(char c) {
+    /* TODO: poll LSR and write to THR */
+}
+
+/*
+ * Receive one character (non-blocking).
+ * If data is available (check LSR), read from RHR and return it.
+ * Otherwise return -1.
+ */
+int
+uart_getc(void) {
+    /* TODO: check LSR and read from RHR */
+    return -1;
+}

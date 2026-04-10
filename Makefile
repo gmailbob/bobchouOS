@@ -25,6 +25,7 @@ TARGET  = kernel.elf
 
 OBJS    = kernel/arch/entry.o \
           kernel/main.o \
+          kernel/drivers/uart.o \
           kernel/lib/string.o
 
 QEMU    = qemu-system-riscv64
