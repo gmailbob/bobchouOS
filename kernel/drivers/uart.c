@@ -14,12 +14,12 @@
 /* Register offsets */
 #define RHR 0 /* Receive Holding Register  (read,  DLAB=0) */
 #define THR 0 /* Transmit Holding Register (write, DLAB=0) */
-#define DLL 0 /* Divisor Latch Low  (write,  DLAB=1) */
-#define IER 1 /* Interrupt Enable Register (DLAB=0) */
-#define DLM 1 /* Divisor Latch High (write, DLAB=1) */
-#define FCR 2 /* FIFO Control Register     (write) */
-#define LCR 3 /* Line Control Register */
-#define LSR 5 /* Line Status Register      (read)  */
+#define DLL 0 /* Divisor Latch Low         (r/w,   DLAB=1) */
+#define IER 1 /* Interrupt Enable Register (r/w,   DLAB=0) */
+#define DLM 1 /* Divisor Latch High        (r/w,   DLAB=1) */
+#define FCR 2 /* FIFO Control Register     (write        ) */
+#define LCR 3 /* Line Control Register     (r/w          ) */
+#define LSR 5 /* Line Status Register      (read         ) */
 
 /* LSR flags */
 #define LSR_RX_READY (1 << 0) /* Data available in RHR */
@@ -55,7 +55,7 @@ uart_init(void) {
     uart_write_reg(DLM, 0);
 
     uart_write_reg(LCR, 0x03);
-    uart_write_reg(LCR, 0x07);
+    uart_write_reg(FCR, 0x07);
 }
 
 /*
