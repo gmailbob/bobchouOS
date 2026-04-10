@@ -14,7 +14,9 @@
 /* Register offsets */
 #define RHR 0 /* Receive Holding Register  (read,  DLAB=0) */
 #define THR 0 /* Transmit Holding Register (write, DLAB=0) */
+#define DLL 0 /* Divisor Latch Low  (write,  DLAB=1) */
 #define IER 1 /* Interrupt Enable Register (DLAB=0) */
+#define DLM 1 /* Divisor Latch High (write, DLAB=1) */
 #define FCR 2 /* FIFO Control Register     (write) */
 #define LCR 3 /* Line Control Register */
 #define LSR 5 /* Line Status Register      (read)  */
@@ -46,7 +48,14 @@ uart_write_reg(uint32 reg, uint8 val) {
  */
 void
 uart_init(void) {
-    /* TODO: implement the initialization sequence */
+    uart_write_reg(IER, 0);
+
+    uart_write_reg(LCR, 0x80);
+    uart_write_reg(DLL, 0x03);
+    uart_write_reg(DLM, 0);
+
+    uart_write_reg(LCR, 0x03);
+    uart_write_reg(LCR, 0x07);
 }
 
 /*
@@ -55,7 +64,9 @@ uart_init(void) {
  */
 void
 uart_putc(char c) {
-    /* TODO: poll LSR and write to THR */
+    while (!(uart_read_reg(LSR) & LSR_TX_IDLE))
+        ;
+    uart_write_reg(THR, c);
 }
 
 /*
@@ -65,6 +76,7 @@ uart_putc(char c) {
  */
 int
 uart_getc(void) {
-    /* TODO: check LSR and read from RHR */
-    return -1;
+    if (!(uart_read_reg(LSR) & LSR_RX_READY))
+        return -1;
+    return uart_read_reg(RHR);
 }
