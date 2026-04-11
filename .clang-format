@@ -17,7 +17,7 @@ AlwaysBreakAfterReturnType: TopLevelDefinitions
 IndentWidth: 4
 TabWidth: 4
 UseTab: Never
-ColumnLimit: 80
+ColumnLimit: 100
 
 # Pointers attach to name: void *ptr, not void* ptr
 PointerAlignment: Right

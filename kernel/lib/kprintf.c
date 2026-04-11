@@ -19,33 +19,28 @@ static const char digits[] = "0123456789abcdef";
  * Print an unsigned integer in the given base (10 or 16).
  * Uses the buffer-and-reverse approach: extract digits with repeated
  * division, collect them in buf[], then print in reverse order.
- *
- * TODO: Implement this function.
- * Hints:
- *   - Use a do-while loop so that val == 0 prints "0".
- *   - buf[i++] = digits[val % base]; val /= base;
- *   - Then print buf[] backwards with uart_putc().
- *   - Buffer size 20 is enough for any 64-bit value.
  */
 static void
-print_uint(unsigned long val, int base)
-{
-    /* TODO */
+print_uint(unsigned long val, int base) {
+    char buf[20];
+    int i = 0;
+    do {
+        buf[i++] = digits[val % base];
+        val /= base;
+    } while (val);
+    while (--i >= 0)
+        uart_putc(buf[i]);
 }
 
 /*
  * Print a signed integer in the given base.
- *
- * TODO: Implement this function.
- * Hints:
- *   - If base is not 10, treat val as unsigned (cast and call print_uint).
- *   - If val is negative, print '-' and negate (cast to unsigned long).
- *   - Otherwise, call print_uint directly.
  */
 static void
-print_int(long val, int base)
-{
-    /* TODO */
+print_int(long val, int base) {
+    if (base != 10 || val >= 0)
+        return print_uint((unsigned long)val, base);
+    uart_putc('-');
+    print_uint((unsigned long)(-val), base);
 }
 
 /*
@@ -68,24 +63,63 @@ print_int(long val, int base)
  *   - If '%' is the last character in fmt (nothing after it), break.
  */
 static void
-vprintfmt(const char *fmt, va_list ap)
-{
-    /* TODO */
+vprintfmt(const char *fmt, va_list ap) {
+    char c;
+    while ((c = *fmt++)) {
+        if (c != '%') {
+            uart_putc(c);
+            continue;
+        }
+
+        switch ((c = *fmt++)) {
+        case 'd':
+            print_int(va_arg(ap, int), 10);
+            break;
+        case 'u':
+            print_uint(va_arg(ap, unsigned int), 10);
+            break;
+        case 'x':
+            print_uint(va_arg(ap, unsigned int), 16);
+            break;
+        case 'p':
+            uart_putc('0');
+            uart_putc('x');
+            print_uint(va_arg(ap, unsigned long), 16);
+            break;
+        case 's':
+            char *s = va_arg(ap, char *);
+            if (!s)
+                s = "(null)";
+            while (*s)
+                uart_putc(*s++);
+            break;
+        case 'c':
+            uart_putc((char)va_arg(ap, int));
+            break;
+        case '%':
+            uart_putc('%');
+            break;
+        case '\0':
+            return;
+        default:
+            uart_putc('%');
+            uart_putc(c);
+            break;
+        }
+    }
 }
 
 /* ---- Public API ---- */
 
 /*
  * Formatted output to the console.
- *
- * TODO: Implement this function.
- * Hints:
- *   - Declare a va_list, call va_start, call vprintfmt, call va_end.
  */
 void
-kprintf(const char *fmt, ...)
-{
-    /* TODO */
+kprintf(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vprintfmt(fmt, ap);
+    va_end(ap);
 }
 
 /*
@@ -99,7 +133,14 @@ kprintf(const char *fmt, ...)
  *   - Halt with for (;;) ;
  */
 void
-panic(const char *fmt, ...)
-{
-    /* TODO */
+panic(const char *fmt, ...) {
+    kprintf("PANIC: ");
+    va_list ap;
+    va_start(ap, fmt);
+    vprintfmt(fmt, ap);
+    va_end(ap);
+    kprintf("\n");
+
+    for (;;)
+        ;
 }
