@@ -26,7 +26,8 @@ TARGET  = kernel.elf
 OBJS    = kernel/arch/entry.o \
           kernel/main.o \
           kernel/drivers/uart.o \
-          kernel/lib/string.o
+          kernel/lib/string.o \
+          kernel/lib/kprintf.o
 
 QEMU    = qemu-system-riscv64
 QFLAGS  = -machine virt -nographic -bios none -kernel $(TARGET)
