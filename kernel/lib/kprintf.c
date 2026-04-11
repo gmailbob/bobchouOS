@@ -6,7 +6,6 @@
  */
 
 #include <stdarg.h>
-#include "types.h"
 #include "drivers/uart.h"
 
 /* ---- Digit lookup table ---- */
@@ -46,24 +45,16 @@ print_int(long val, int base) {
 /*
  * Core formatting engine. Walks the format string, dispatches on
  * specifiers, and calls uart_putc / print_uint / print_int.
- *
- * TODO: Implement this function.
- * Hints:
- *   - Loop through fmt one character at a time.
- *   - If the character is not '%', output it with uart_putc().
- *   - If it is '%', advance to the next character and switch:
- *       'd' -> print_int(va_arg(ap, int), 10)
- *       'u' -> print_uint(va_arg(ap, unsigned int), 10)
- *       'x' -> print_uint(va_arg(ap, unsigned int), 16)
- *       'p' -> print "0x", then print_uint(va_arg(ap, unsigned long), 16)
- *       's' -> loop through the string with uart_putc; print "(null)" if NULL
- *       'c' -> uart_putc(va_arg(ap, int))  (int because of promotion)
- *       '%' -> uart_putc('%')
- *       default -> uart_putc('%'), uart_putc(c)  (print unknown specifier literally)
- *   - If '%' is the last character in fmt (nothing after it), break.
  */
 static void
 vprintfmt(const char *fmt, va_list ap) {
+    /*
+     * Using char here is fine: the char->int->char round trip through
+     * uart_putc preserves the original byte on both signed and unsigned
+     * char systems. The C standard library uses int (e.g., getchar/putchar)
+     * to represent EOF (-1) alongside all 256 byte values — we don't need
+     * that here since we stop at the null terminator.
+     */
     char c;
     while ((c = *fmt++)) {
         if (c != '%') {
@@ -86,13 +77,14 @@ vprintfmt(const char *fmt, va_list ap) {
             uart_putc('x');
             print_uint(va_arg(ap, unsigned long), 16);
             break;
-        case 's':
+        case 's': {
             char *s = va_arg(ap, char *);
             if (!s)
                 s = "(null)";
             while (*s)
                 uart_putc(*s++);
             break;
+        }
         case 'c':
             uart_putc((char)va_arg(ap, int));
             break;
@@ -124,13 +116,6 @@ kprintf(const char *fmt, ...) {
 
 /*
  * Print a panic message and halt.
- *
- * TODO: Implement this function.
- * Hints:
- *   - Print "PANIC: " with kprintf.
- *   - Use va_start/vprintfmt/va_end to print the formatted message.
- *   - Print a newline with kprintf.
- *   - Halt with for (;;) ;
  */
 void
 panic(const char *fmt, ...) {
