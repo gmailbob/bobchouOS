@@ -2,8 +2,8 @@
 # bobchouOS C formatting style
 # Linux kernel style with minor tweaks.
 #
-# Run:    clang-format -i kernel/**/*.c kernel/**/*.h
-# Check:  clang-format --dry-run --Werror kernel/**/*.c kernel/**/*.h
+# Run:    find kernel/ \( -name "*.c" -o -name "*.h" \) -exec clang-format -i {} +
+# Check:  append --dry-run --Werror after clang-format
 
 BasedOnStyle: LLVM
 

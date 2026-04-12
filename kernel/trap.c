@@ -25,9 +25,12 @@ kerneltrap(void) {
         kprintf("sstatus.SIE still set?");
 
     /* Check scause bit 63 to distinguish interrupts vs exceptions. */
-    if (!(scause_val & SCAUSE_INTERRUPT))
-        panic("kerneltrap exception: scause=%p, sepc=%p, stval=%p", (void *)scause_val,
+    if (scause_val & SCAUSE_INTERRUPT) {
+        /* Interrupt — we don't handle any yet (timer comes in Round 2-3). */
+        panic("kerneltrap: unexpected interrupt code=%d", (int)(scause_val & 0xff));
+    } else {
+        /* Exception — always fatal in kernel mode. */
+        panic("kerneltrap: exception scause=%p sepc=%p stval=%p", (void *)scause_val,
               (void *)sepc_val, (void *)stval_val);
-    
-    kprintf("interrupt code=%p", (void *)scause_val);
+    }
 }
