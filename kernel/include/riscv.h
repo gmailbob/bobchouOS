@@ -44,6 +44,29 @@
 #define SSTATUS_SPP         (1UL << 8)
 #define SSTATUS_SPIE        (1UL << 5)
 #define SSTATUS_SIE         (1UL << 1)
+
+/* ---- scause ---- */
+#define SCAUSE_INTERRUPT    (1UL << 63)
+
+/* Interrupt cause codes (scause value when bit 63 = 1) */
+#define IRQ_S_SOFT          1
+#define IRQ_S_TIMER         5
+#define IRQ_S_EXT           9
+
+/* Exception cause codes (scause value when bit 63 = 0) */
+#define EXC_INST_MISALIGN   0
+#define EXC_INST_ACCESS     1
+#define EXC_ILLEGAL_INST    2
+#define EXC_BREAKPOINT      3
+#define EXC_LOAD_MISALIGN   4
+#define EXC_LOAD_ACCESS     5
+#define EXC_STORE_MISALIGN  6
+#define EXC_STORE_ACCESS    7
+#define EXC_ECALL_U         8
+#define EXC_ECALL_S         9
+#define EXC_INST_PAGE       12
+#define EXC_LOAD_PAGE       13
+#define EXC_STORE_PAGE      15
 // clang-format on
 
 #endif /* RISCV_H */

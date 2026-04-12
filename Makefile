@@ -24,7 +24,9 @@ ASFLAGS = -march=rv64imac_zicsr -mabi=lp64 -g
 TARGET  = kernel.elf
 
 OBJS    = kernel/arch/entry.o \
+          kernel/arch/trapvec.o \
           kernel/main.o \
+          kernel/trap.o \
           kernel/drivers/uart.o \
           kernel/lib/string.o \
           kernel/lib/kprintf.o

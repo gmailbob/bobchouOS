@@ -9,6 +9,9 @@
 #include "kprintf.h"
 #include "riscv.h"
 
+/* Trap vector (defined in trapvec.S). */
+extern void kernelvec(void);
+
 /* Linker-provided symbols (see linker.ld). */
 extern char _kernel_start[];
 extern char _kernel_end[];
@@ -18,6 +21,9 @@ extern char _bss_end[];
 void
 kmain(void) {
     uart_init();
+
+    /* TODO: Set stvec to point to kernelvec (direct mode).
+     *       This must happen before anything that could trap. */
 
     kprintf("\n");
     kprintf("bobchouOS is booting...\n");
@@ -35,6 +41,13 @@ kmain(void) {
     kprintf("  bss:  %p .. %p (%d bytes)\n", _bss_start, _bss_end, (int)(_bss_end - _bss_start));
     kprintf("UART:   %p\n", (void *)0x10000000);
     kprintf("\n");
+
+    /* Test the trap handler by triggering an illegal instruction.
+     * Reading mhartid from S-mode causes exception 2 (illegal instruction).
+     * Expected: kerneltrap prints diagnostics and halts. */
+    kprintf("testing trap handler...\n");
+    uint64 x = csrr(mhartid);
+    (void)x;
 
     /* Nothing else to do — halt. */
     for (;;)
