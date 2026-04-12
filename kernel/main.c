@@ -22,8 +22,9 @@ void
 kmain(void) {
     uart_init();
 
-    /* TODO: Set stvec to point to kernelvec (direct mode).
-     *       This must happen before anything that could trap. */
+    /* Set stvec to point to kernelvec (direct mode).
+     * This must happen before anything that could trap. */
+    csrw(stvec, kernelvec);
 
     kprintf("\n");
     kprintf("bobchouOS is booting...\n");
