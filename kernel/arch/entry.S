@@ -2,15 +2,18 @@
 #
 # This is the very first code that executes when QEMU jumps to 0x80000000.
 # It runs in M-mode. Its job is to set up just enough for C code to run,
-# then hand off to kmain().
+# then switch to S-mode and hand off to kmain().
 #
-# Four things to do:
+# Seven things to do:
 #   1. Park non-boot harts (only hart 0 should continue)
 #   2. Zero the BSS section (so uninitialized globals start at zero)
 #   3. Set up the stack pointer
-#   4. Jump to kmain()
+#   4. Configure M-mode CSRs for the M→S switch
+#   5. Delegate traps to S-mode
+#   6. Set up PMP so S-mode can access all memory
+#   7. Execute mret to enter S-mode at kmain()
 #
-# Refer to Lecture 1-1, Part 5 for a detailed walkthrough.
+# Refer to Lecture 1-1 (Parts 1-3) and Lecture 2-1 (Parts 3-7).
 
 .section .text.entry
 .global _start
@@ -41,10 +44,43 @@ bss_done:
     #
     la sp, stack_top
 
-    # ---- Step 4: Jump to C ----
-    # Call kmain(). If it returns, fall through to spin.
+    # ---- Step 4: Set mstatus.MPP to Supervisor ----
+    # Read mstatus, clear the MPP field (bits 12:11), set it to 01
+    # (Supervisor), and write it back. This tells mret which mode
+    # to switch to.
     #
-    call kmain
+    # TODO: implement (read-modify-write mstatus.MPP)
+
+    # ---- Step 5: Set mepc to kmain ----
+    # Load the address of kmain into mepc. After mret, the CPU will
+    # jump here.
+    #
+    # TODO: implement (la + csrw mepc)
+
+    # ---- Step 6: Disable paging ----
+    # Write 0 to satp so there is no address translation.
+    #
+    # TODO: implement (csrw satp)
+
+    # ---- Step 7: Delegate traps to S-mode ----
+    # Write 0xffff to both medeleg and mideleg so that S-mode handles
+    # its own exceptions and interrupts. Bits that can't be delegated
+    # are hardwired to 0 by the hardware.
+    #
+    # TODO: implement (li + csrw medeleg + csrw mideleg)
+
+    # ---- Step 8: Configure PMP ----
+    # Set pmpaddr0 to 0x3ffffffffffffff (all 54 implemented bits = 1)
+    # and pmpcfg0 to 0x0f (TOR mode, RWX). This grants S-mode access
+    # to the entire physical address space.
+    #
+    # TODO: implement (li + csrw pmpaddr0 + li + csrw pmpcfg0)
+
+    # ---- Step 9: Enter S-mode ----
+    # Execute mret. The CPU reads mepc (→ kmain) and mstatus.MPP
+    # (→ Supervisor) and switches mode + jumps in one instruction.
+    #
+    # TODO: implement (mret)
 
 spin:
     wfi
