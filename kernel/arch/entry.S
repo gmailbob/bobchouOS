@@ -86,7 +86,27 @@ bss_done:
     li    t0, 0x0f
     csrw  pmpcfg0, t0
 
-    # ---- Step 9: Enter S-mode ----
+    # ---- Step 9: Set up timer ----
+    # TODO: Set up the CLINT timer so that periodic interrupts reach
+    # S-mode via the SSIP forwarding trick. You need to:
+    #
+    # 1. Fill the scratch area (timer_scratch) with pre-computed values:
+    #    - scratch[3] = address of mtimecmp for hart 0
+    #    - scratch[4] = timer interval
+    #    (scratch[0..2] are save slots used by timer_vec at runtime)
+    #
+    # 2. Point mscratch at the scratch area
+    #
+    # 3. Program the first timer deadline:
+    #    Read mtime (MMIO), add the interval, write to mtimecmp (MMIO)
+    #
+    # 4. Set mtvec to timer_vec (direct mode, same .align trick as stvec)
+    #
+    # 5. Enable machine timer interrupt: set mie.MTIE (bit 7)
+    #
+    # Refer to Lecture 2-3, Part 5.
+
+    # ---- Step 10: Enter S-mode ----
     # Execute mret. The CPU reads mepc (→ kmain) and mstatus.MPP
     # (→ Supervisor) and switches mode + jumps in one instruction.
     mret
@@ -94,3 +114,33 @@ bss_done:
 park:
     wfi
     j     park
+
+# ---------- M-mode timer interrupt handler ----------
+#
+# timer_vec — called when mtime >= mtimecmp (machine timer interrupt).
+# This runs in M-mode. It must:
+#   1. Swap a0 with mscratch to get the scratch area pointer
+#   2. Save a1, a2, a3 to the scratch area
+#   3. Schedule the next tick: mtimecmp = mtimecmp + interval
+#      (load &mtimecmp and interval from the scratch area)
+#   4. Raise SSIP (set sip bit 1) to notify S-mode
+#   5. Restore a1, a2, a3 from the scratch area
+#   6. Swap a0 back from mscratch
+#   7. mret
+#
+# Refer to Lecture 2-3, Part 4.
+
+.align 4
+.globl timer_vec
+timer_vec:
+    # TODO: Implement the M-mode timer handler (~15 instructions).
+
+    mret
+
+# ---------- Timer scratch area (BSS) ----------
+
+.section .bss
+.align 4
+.globl timer_scratch
+timer_scratch:
+    .zero 40          # 5 x 8 bytes (see Lecture 2-3, Part 4)

@@ -28,6 +28,11 @@ kmain(void) {
      * before anything that could trap. */
     csrw(stvec, (uint64)kernel_vec);
 
+    /* TODO: Enable S-mode interrupts for timer ticks.
+     * 1. Set sie.SSIE (bit 1) — permit supervisor software interrupts
+     * 2. Set sstatus.SIE (bit 1) — global interrupt enable
+     * Refer to Lecture 2-3, Part 6. */
+
     kprintf("\n");
     kprintf("bobchouOS is booting...\n");
     kprintf("running in S-mode\n");
@@ -45,14 +50,9 @@ kmain(void) {
     kprintf("UART:   %p\n", (void *)0x10000000);
     kprintf("\n");
 
-    /* Test the trap handler by triggering an illegal instruction.
-     * Reading mhartid from S-mode causes exception 2 (illegal instruction).
-     * Expected: kernel_trap prints diagnostics and halts. */
-    kprintf("testing trap handler...\n");
-    uint64 x = csrr(mhartid);
-    (void)x;
+    kprintf("timer interrupts enabled, waiting for ticks...\n");
 
-    /* Nothing else to do — halt. */
+    /* Spin forever — timer interrupts will fire periodically. */
     for (;;)
-        ;
+        asm volatile("wfi");
 }

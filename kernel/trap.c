@@ -12,6 +12,10 @@
 #include "riscv.h"
 #include "kprintf.h"
 
+/* Timer tick counter. Volatile because it is modified in interrupt
+ * context (kernel_trap) and read from normal context (kmain loop). */
+volatile uint64 ticks = 0;
+
 void
 kernel_trap(void) {
     uint64 sepc_val = csrr(sepc);
@@ -21,14 +25,22 @@ kernel_trap(void) {
 
     /* Sanity checks: */
     if (!(sstatus_val & SSTATUS_SPP))
-        kprintf("sstatus.SPP not yet set?");
+        panic("kernel_trap: not from S-mode");
     if (sstatus_val & SSTATUS_SIE)
-        kprintf("sstatus.SIE still set?");
+        panic("kernel_trap: interrupts enabled during trap");
 
     /* Check scause bit 63 to distinguish interrupts vs exceptions. */
     if (scause_val & SCAUSE_INTERRUPT) {
-        /* Interrupt — we don't handle any yet (timer comes in Round 2-3). */
-        panic("kernel_trap: unexpected interrupt code=%d", (int)(scause_val & 0xff));
+        uint64 code = scause_val & 0xff;
+        if (code == IRQ_S_SOFT) {
+            /* TODO: Timer tick — forwarded from M-mode via SSIP.
+             * 1. Clear sip.SSIP so we don't re-trap immediately
+             * 2. Increment the tick counter
+             * 3. Print a message every 100 ticks (once per second)
+             * Refer to Lecture 2-3, Part 6. */
+        } else {
+            panic("kernel_trap: unexpected interrupt code=%d", (int)code);
+        }
     } else {
         /* Exception — always fatal in kernel mode. */
         panic("kernel_trap: exception scause=%p sepc=%p stval=%p", (void *)scause_val,

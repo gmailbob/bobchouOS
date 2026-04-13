@@ -45,6 +45,25 @@
 #define SSTATUS_SPIE        (1UL << 5)
 #define SSTATUS_SIE         (1UL << 1)
 
+/* ---- mie (Machine Interrupt Enable) bits ---- */
+#define MIE_MTIE            (1UL << 7)   /* machine timer */
+
+/* ---- sie (Supervisor Interrupt Enable) bits ---- */
+#define SIE_SSIE            (1UL << 1)   /* supervisor software */
+#define SIE_STIE            (1UL << 5)   /* supervisor timer */
+#define SIE_SEIE            (1UL << 9)   /* supervisor external */
+
+/* ---- sip (Supervisor Interrupt Pending) bits ---- */
+#define SIP_SSIP            (1UL << 1)   /* supervisor software pending */
+
+/* ---- CLINT memory-mapped registers (QEMU virt) ---- */
+#define CLINT_BASE          0x2000000UL
+#define CLINT_MTIMECMP(hart) (CLINT_BASE + 0x4000 + 8 * (hart))
+#define CLINT_MTIME         (CLINT_BASE + 0xBFF8)
+
+/* Timer interval: 100,000 ticks = 10ms at 10 MHz */
+#define TIMER_INTERVAL      100000UL
+
 /* ---- scause ---- */
 #define SCAUSE_INTERRUPT    (1UL << 63)
 
