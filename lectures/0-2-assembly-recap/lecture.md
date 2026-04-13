@@ -1562,7 +1562,7 @@ project ahead:
 | 0 | `entry.S` (already written) | Set stack pointer, call main | ~15 |
 | 1 | `entry.S` (extended) | Same, slightly more setup | ~20 |
 | 2 | Inline asm in `riscv.h` | CSR read/write helpers | ~30 |
-| 2 | `kernelvec.S` | Trap entry/exit from kernel mode | ~30 |
+| 2 | `kernel_vec.S` | Trap entry/exit from kernel mode | ~30 |
 | 5 | `swtch.S` | Save/restore registers for context switch | ~20 |
 | 6 | `trampoline.S` | User ↔ kernel mode transition | ~50 |
 

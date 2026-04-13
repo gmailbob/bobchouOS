@@ -1,19 +1,26 @@
-# entry.S — Kernel entry point for bobchouOS
+# entry.S — M-mode boot and timer code for bobchouOS
 #
-# This is the very first code that executes when QEMU jumps to 0x80000000.
-# It runs in M-mode. Its job is to set up just enough for C code to run,
-# then switch to S-mode and hand off to kmain().
+# This is the only file that runs in M-mode. All other kernel code
+# runs in S-mode after mret. Any future M-mode code goes here.
 #
-# Seven things to do:
+# It contains:
+#
+# Boot sequence (runs once at startup):
 #   1. Park non-boot harts (only hart 0 should continue)
 #   2. Zero the BSS section (so uninitialized globals start at zero)
 #   3. Set up the stack pointer
 #   4. Configure M-mode CSRs for the M→S switch
 #   5. Delegate traps to S-mode
 #   6. Set up PMP so S-mode can access all memory
-#   7. Execute mret to enter S-mode at kmain()
+#   7. Set up timer (CLINT, scratch area, mtvec, mie)
+#   8. Execute mret to enter S-mode at kmain()
 #
-# Refer to Lecture 1-1 (Parts 1-3) and Lecture 2-1 (Parts 3-7).
+# Timer handler (runs on each timer interrupt):
+#   timer_vec — M-mode handler that schedules the next tick and
+#   raises SSIP to forward the interrupt to S-mode.
+#
+# Refer to Lecture 1-1 (Parts 1-3), Lecture 2-1 (Parts 3-7),
+# and Lecture 2-3 (Parts 4-5).
 
 .section .text.entry
 .global _start
@@ -83,10 +90,6 @@ bss_done:
     # Execute mret. The CPU reads mepc (→ kmain) and mstatus.MPP
     # (→ Supervisor) and switches mode + jumps in one instruction.
     mret
-
-spin:
-    wfi
-    j     spin
 
 park:
     wfi

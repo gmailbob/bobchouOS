@@ -1,21 +1,21 @@
-# trapvec.S — S-mode trap vector for bobchouOS
+# kernel_vec.S — S-mode trap vector for bobchouOS
 #
 # When any S-mode trap occurs (interrupt, exception, ecall), the CPU
 # jumps here (via stvec).  This code saves the caller-saved registers
-# onto the kernel stack, calls the C handler kerneltrap(), restores
+# onto the kernel stack, calls the C handler kernel_trap(), restores
 # the registers, and returns via sret.
 #
 # We only save caller-saved registers (ra, t0-t6, a0-a7) because the
-# C calling convention guarantees kerneltrap() preserves callee-saved
+# C calling convention guarantees kernel_trap() preserves callee-saved
 # registers (s0-s11, sp, gp, tp).
 #
 # Refer to Lecture 2-2, Parts 5-6.
 
 .section .text
-.globl kernelvec
+.globl kernel_vec
 .align 4
 
-kernelvec:
+kernel_vec:
     # ---- Save caller-saved registers ----
     addi  sp, sp, -128
 
@@ -37,7 +37,7 @@ kernelvec:
     sd    x31, 120(sp)    # t6
 
     # ---- Call C trap handler ----
-    call kerneltrap
+    call kernel_trap
 
     # ---- Restore caller-saved registers ----
     ld    x1,    0(sp)    # ra

@@ -9,8 +9,8 @@
 #include "kprintf.h"
 #include "riscv.h"
 
-/* Trap vector (defined in trapvec.S). */
-extern void kernelvec(void);
+/* Trap vector (defined in kernel_vec.S). */
+extern void kernel_vec(void);
 
 /* Linker-provided symbols (see linker.ld). */
 extern char _kernel_start[];
@@ -22,9 +22,11 @@ void
 kmain(void) {
     uart_init();
 
-    /* Set stvec to point to kernelvec (direct mode).
-     * This must happen before anything that could trap. */
-    csrw(stvec, (uint64)kernelvec);
+    /* Set stvec to point to kernel_vec (direct mode).
+     * stvec is an S-mode concern, so we set it here rather than in
+     * entry.S (which is our M-mode boot code). This must happen
+     * before anything that could trap. */
+    csrw(stvec, (uint64)kernel_vec);
 
     kprintf("\n");
     kprintf("bobchouOS is booting...\n");
@@ -45,7 +47,7 @@ kmain(void) {
 
     /* Test the trap handler by triggering an illegal instruction.
      * Reading mhartid from S-mode causes exception 2 (illegal instruction).
-     * Expected: kerneltrap prints diagnostics and halts. */
+     * Expected: kernel_trap prints diagnostics and halts. */
     kprintf("testing trap handler...\n");
     uint64 x = csrr(mhartid);
     (void)x;

@@ -25,7 +25,7 @@
 > - Every S-mode trap CSR: `stvec`, `sepc`, `scause`, `stval`, `sscratch`
 > - The exact sequence of steps the hardware performs when a trap fires
 > - What a trap frame is and why all 31 registers must be saved
-> - How to write an assembly stub (`trapvec.S`) that saves and restores
+> - How to write an assembly stub (`kernel_vec.S`) that saves and restores
 >   the full register set
 > - How to write a C dispatcher (`trap.c`) that reads `scause` and acts
 > - How xv6 handles kernel-mode traps (`kernelvec.S` + `kerneltrap()`)
@@ -978,7 +978,7 @@ bytes as required by the RISC-V calling convention).
 
 ---
 
-## Part 6: The Assembly Stub — `trapvec.S`
+## Part 6: The Assembly Stub — `kernel_vec.S`
 
 This is the first code that executes when any S-mode trap occurs. Its
 job is simple but critical:
@@ -997,14 +997,14 @@ compiler might use `t0` for a temporary — overwriting the interrupted
 code's `t0` before we saved it. Only hand-written assembly can guarantee
 that we save every register before touching any.
 
-xv6's `kernelvec.S` is 50 lines of assembly. Ours will be similar.
+xv6's `kernelvec.S` is 50 lines of assembly. Ours (`kernel_vec.S`) will be similar.
 
 ### The save sequence
 
 ```asm
-.globl kernelvec
+.globl kernel_vec
 .align 4                    # stvec requires 4-byte alignment
-kernelvec:
+kernel_vec:
     # Make room on the stack for 32 slots x 8 bytes = 256 bytes
     addi  sp, sp, -256
 
@@ -1042,7 +1042,7 @@ kernelvec:
     sd    x31,248(sp)       # t6
 
     # Call the C trap handler
-    call  kerneltrap
+    call  kernel_trap
 
     # Restore x1-x31
     ld    x1,   8(sp)
@@ -1117,7 +1117,7 @@ there for completeness and correctness if the C handler ever changes
 
 ### The `.align 4` directive
 
-The `.align 4` before `kernelvec` is critical. Recall that `stvec`
+The `.align 4` before `kernel_vec` is critical. Recall that `stvec`
 uses bits 1:0 for the MODE field, so the handler address must be
 4-byte aligned (bits 1:0 = 0). `.align 4` tells the assembler to
 pad with NOPs until the address is a multiple of 2^4 = 16 bytes.
@@ -1143,7 +1143,7 @@ xv6 uses.
 
 ## Part 7: The C Dispatcher — `trap.c`
 
-After saving all registers, the assembly stub calls `kerneltrap()`.
+After saving all registers, the assembly stub calls `kernel_trap()`.
 This is a regular C function that reads `scause` and decides what to
 do.
 
@@ -1157,9 +1157,9 @@ trap is unexpected, so we print diagnostics and halt:
 #include "riscv.h"
 #include "kprintf.h"
 
-// Called from kernelvec (assembly stub) when any S-mode trap occurs.
+// Called from kernel_vec (assembly stub) when any S-mode trap occurs.
 void
-kerneltrap(void)
+kernel_trap(void)
 {
     uint64 sepc_val   = csrr(sepc);
     uint64 scause_val = csrr(scause);
@@ -1168,24 +1168,24 @@ kerneltrap(void)
 
     // Check that we came from S-mode (SPP bit should be set)
     if ((sstatus_val & SSTATUS_SPP) == 0)
-        kprintf("kerneltrap: not from S-mode?\n");
+        kprintf("kernel_trap: not from S-mode?\n");
 
     // Check that interrupts were disabled (SIE should be 0,
     // since the hardware clears it on trap entry)
     if (sstatus_val & SSTATUS_SIE)
-        kprintf("kerneltrap: interrupts enabled during trap?\n");
+        kprintf("kernel_trap: interrupts enabled during trap?\n");
 
     if (scause_val & SCAUSE_INTERRUPT) {
         // Interrupt
         uint64 code = scause_val & 0xff;
-        kprintf("kerneltrap: unexpected interrupt code=%d\n", code);
+        kprintf("kernel_trap: unexpected interrupt code=%d\n", code);
     } else {
         // Exception
-        kprintf("kerneltrap: exception scause=%p sepc=%p stval=%p\n",
+        kprintf("kernel_trap: exception scause=%p sepc=%p stval=%p\n",
                 (void *)scause_val, (void *)sepc_val, (void *)stval_val);
     }
 
-    kprintf("kerneltrap: halting.\n");
+    kprintf("kernel_trap: halting.\n");
     for (;;)
         ;
 }
@@ -1227,11 +1227,11 @@ The trap handler only works if `stvec` points to it. We need to:
 
 ```c
 // In kmain(), early in the function:
-extern void kernelvec(void);   // defined in trapvec.S
-csrw(stvec, (uint64)kernelvec);
+extern void kernel_vec(void);   // defined in kernel_vec.S
+csrw(stvec, (uint64)kernel_vec);
 ```
 
-Since `kernelvec` is aligned to 16 bytes (`.align 4`), the bottom 2
+Since `kernel_vec` is aligned to 16 bytes (`.align 4`), the bottom 2
 bits of its address are 0, which means MODE = 00 (direct). We don't
 need to set the mode bits explicitly — the alignment gives us direct
 mode for free.
@@ -1347,14 +1347,14 @@ Key observations:
 
 We need three things:
 
-1. **`kernel/arch/trapvec.S`** — assembly stub (save regs, call C,
+1. **`kernel/arch/kernel_vec.S`** — assembly stub (save regs, call C,
    restore regs, `sret`)
 2. **`kernel/trap.c`** — C dispatcher (read `scause`, print
    diagnostics, halt)
 3. **Updates to existing files:**
    - `kernel/include/riscv.h` — add `scause`, `stvec`, etc. CSR
      definitions
-   - `kernel/main.c` — set `stvec` to point to `kernelvec`
+   - `kernel/main.c` — set `stvec` to point to `kernel_vec`
 
 ### File layout
 
@@ -1362,7 +1362,7 @@ We need three things:
 kernel/
     arch/
         entry.S         ← existing (M→S switch)
-        trapvec.S       ← NEW (trap vector assembly stub)
+        kernel_vec.S      ← NEW (trap vector assembly stub)
     include/
         riscv.h         ← UPDATE (add trap CSR definitions)
     trap.c              ← NEW (C trap dispatcher)
@@ -1436,16 +1436,16 @@ Expected output:
 
 ```
 testing trap handler...
-kerneltrap: exception scause=0x0000000000000002 sepc=0x800xxxxx stval=0x...
-kerneltrap: halting.
+kernel_trap: exception scause=0x0000000000000002 sepc=0x800xxxxx stval=0x...
+kernel_trap: halting.
 ```
 
 `scause = 2` is "illegal instruction" — exactly right. The test code
 tries to execute `csrr ..., mhartid`, the CPU raises an illegal
 instruction exception because `mhartid` is an M-mode CSR, the trap
 fires, our handler catches it, prints the diagnostics, and halts. This
-confirms the entire pipeline works: `stvec` → `kernelvec` → save regs
-→ `kerneltrap()` → print → halt.
+confirms the entire pipeline works: `stvec` → `kernel_vec` → save regs
+→ `kernel_trap()` → print → halt.
 
 > **Important:** The test trap (`csrr mhartid`) will cause the kernel
 > to halt. This is expected for Round 2-2 — we're only building the
@@ -1463,12 +1463,12 @@ confirms the entire pipeline works: `stvec` → `kernelvec` → save regs
 
 | Aspect | xv6 | bobchouOS (Round 2-2) |
 |--------|-----|----------------------|
-| Kernel trap vector | `kernelvec.S` | `trapvec.S` |
+| Kernel trap vector | `kernelvec.S` | `kernel_vec.S` |
 | Registers saved | Caller-saved only (ra, t0-t6, a0-a7) | Same optimization |
 | Save location | Kernel stack | Kernel stack (`kmain` stack) |
 | Uses `sscratch`? | No (kernel traps only) | No |
 | `stvec` mode | Direct (MODE = 00) | Direct (MODE = 00) |
-| C handler | `kerneltrap()` in `trap.c` | `kerneltrap()` in `trap.c` |
+| C handler | `kerneltrap()` in `trap.c` | `kernel_trap()` in `trap.c` |
 | Kernel exceptions | `panic()` | Print and halt |
 | User exceptions | `usertrap()` → kill process or `syscall()` | Not yet (Phase 6) |
 | S-mode `ecall` | Goes to M-mode (OpenSBI, provided by QEMU) | No SBI (`-bios none`); Round 2-3 handles timer directly |
@@ -1487,12 +1487,12 @@ to that level incrementally.
 
 After you read this lecture, we'll:
 
-1. **Create the skeleton** — `trapvec.S` and `trap.c` with TODO markers,
+1. **Create the skeleton** — `kernel_vec.S` and `trap.c` with TODO markers,
    plus `riscv.h` updates and `main.c` wiring
 2. **You implement the TODOs** — fill in the assembly save/restore
    sequence and the C dispatcher logic
 3. **Test** — `make run` should show the test trap being caught:
-   `kerneltrap: exception scause=0x... sepc=0x... stval=0x...`
+   `kernel_trap: exception scause=0x... sepc=0x... stval=0x...`
 
 Then we move to Round 2-3: programming the CLINT hardware to generate
 timer interrupts, and extending the handler to actually *handle* them
