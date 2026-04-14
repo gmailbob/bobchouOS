@@ -33,11 +33,10 @@ kernel_trap(void) {
     if (scause_val & SCAUSE_INTERRUPT) {
         uint64 code = scause_val & 0xff;
         if (code == IRQ_S_SOFT) {
-            /* TODO: Timer tick — forwarded from M-mode via SSIP.
-             * 1. Clear sip.SSIP so we don't re-trap immediately
-             * 2. Increment the tick counter
-             * 3. Print a message every 100 ticks (once per second)
-             * Refer to Lecture 2-3, Part 6. */
+            csrw(sip, csrr(sip) & (~SIP_SSIP));
+            if (++ticks % 100 == 0) {
+                kprintf("current ticks=%d\n", ticks);
+            }
         } else {
             panic("kernel_trap: unexpected interrupt code=%d", (int)code);
         }

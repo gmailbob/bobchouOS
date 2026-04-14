@@ -87,24 +87,36 @@ bss_done:
     csrw  pmpcfg0, t0
 
     # ---- Step 9: Set up timer ----
-    # TODO: Set up the CLINT timer so that periodic interrupts reach
-    # S-mode via the SSIP forwarding trick. You need to:
-    #
+    # Set up the CLINT timer so that periodic interrupts reach S-mode
+    # via the SSIP forwarding trick.
+
     # 1. Fill the scratch area (timer_scratch) with pre-computed values:
     #    - scratch[3] = address of mtimecmp for hart 0
     #    - scratch[4] = timer interval
     #    (scratch[0..2] are save slots used by timer_vec at runtime)
-    #
+    la    t0, timer_scratch
+    li    t1, 0x2004000
+    sd    t1, 24(t0)
+    li    t2, 100000
+    sd    t2, 32(t0)
+
     # 2. Point mscratch at the scratch area
-    #
+    csrw  mscratch, t0
+
     # 3. Program the first timer deadline:
     #    Read mtime (MMIO), add the interval, write to mtimecmp (MMIO)
-    #
+    li    t0, 0x200BFF8
+    ld    t0, 0(t0)
+    add   t0, t0, t2
+    sd    t0, 0(t1)
+
     # 4. Set mtvec to timer_vec (direct mode, same .align trick as stvec)
-    #
+    la    t0, timer_vec
+    csrw  mtvec, t0
+
     # 5. Enable machine timer interrupt: set mie.MTIE (bit 7)
-    #
-    # Refer to Lecture 2-3, Part 5.
+    li    t0, 1 << 7
+    csrs  mie, t0
 
     # ---- Step 10: Enter S-mode ----
     # Execute mret. The CPU reads mepc (→ kmain) and mstatus.MPP
@@ -132,9 +144,26 @@ park:
 
 .align 4
 .globl timer_vec
-timer_vec:
-    # TODO: Implement the M-mode timer handler (~15 instructions).
 
+timer_vec:
+    csrrw a0, mscratch, a0
+    sd    a1, 0(a0)
+    sd    a2, 8(a0)
+    sd    a3, 16(a0)
+    ld    a1, 24(a0)
+    ld    a2, 32(a0)
+    ld    a3, 0(a1)
+
+    add   a3, a3, a2
+    sd    a3, 0(a1)
+
+    li    a1, 1 << 1
+    csrs  sip, a1
+
+    ld    a1, 0(a0)
+    ld    a2, 8(a0)
+    ld    a3, 16(a0)
+    csrrw a0, mscratch, a0
     mret
 
 # ---------- Timer scratch area (BSS) ----------
@@ -142,5 +171,6 @@ timer_vec:
 .section .bss
 .align 4
 .globl timer_scratch
+
 timer_scratch:
     .zero 40          # 5 x 8 bytes (see Lecture 2-3, Part 4)

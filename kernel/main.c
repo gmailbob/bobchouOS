@@ -15,8 +15,6 @@ extern void kernel_vec(void);
 /* Linker-provided symbols (see linker.ld). */
 extern char _kernel_start[];
 extern char _kernel_end[];
-extern char _bss_start[];
-extern char _bss_end[];
 
 void
 kmain(void) {
@@ -28,29 +26,18 @@ kmain(void) {
      * before anything that could trap. */
     csrw(stvec, (uint64)kernel_vec);
 
-    /* TODO: Enable S-mode interrupts for timer ticks.
-     * 1. Set sie.SSIE (bit 1) — permit supervisor software interrupts
-     * 2. Set sstatus.SIE (bit 1) — global interrupt enable
-     * Refer to Lecture 2-3, Part 6. */
+    /* Enable S-mode interrupts for timer ticks. */
+    csrw(sie, csrr(sie) | SIE_SSIE);
+    csrw(sstatus, csrr(sstatus) | SSTATUS_SIE);
 
-    kprintf("\n");
-    kprintf("bobchouOS is booting...\n");
+    kprintf("\nbobchouOS is booting...\n");
     kprintf("running in S-mode\n");
-    kprintf("\n");
-
-    /* Read sstatus to confirm we're in S-mode (or higher).
-     * If we were in U-mode, this CSR read would fault. */
-    uint64 sstatus_val = csrr(sstatus);
-    kprintf("sstatus = %p\n", (void *)sstatus_val);
-
-    /* Kernel memory layout. */
+    /* Read sstatus to confirm we're in S-mode (or higher). */
+    kprintf("sstatus=%p\n", (void *)csrr(sstatus));
     kprintf("kernel: %p .. %p (%d bytes)\n", _kernel_start, _kernel_end,
             (int)(_kernel_end - _kernel_start));
-    kprintf("  bss:  %p .. %p (%d bytes)\n", _bss_start, _bss_end, (int)(_bss_end - _bss_start));
-    kprintf("UART:   %p\n", (void *)0x10000000);
-    kprintf("\n");
 
-    kprintf("timer interrupts enabled, waiting for ticks...\n");
+    kprintf("\ntimer interrupts enabled, waiting for ticks...\n");
 
     /* Spin forever — timer interrupts will fire periodically. */
     for (;;)
