@@ -484,6 +484,65 @@ Lecture 2-1 listed these CSRs in a reference table. Now we need to
 understand each one deeply, because our trap handler code will read and
 write all of them.
 
+Before we dive in, it's worth understanding how S-mode and M-mode CSRs
+relate to each other. There are two kinds of relationships:
+
+**Restricted views** — the S-mode and M-mode CSR names point to the
+**same physical register** in the hardware, but at different CSR
+addresses. The privilege check happens on the address, and the bitmask
+depends on which address was used:
+
+```
+Physical hardware: ONE register (e.g., the mstatus bits)
+
+Two CSR addresses point to it:
+  CSR 0x300 (mstatus) → privilege check: M-mode only → full access
+  CSR 0x100 (sstatus) → privilege check: S-mode OK  → masked access
+
+When S-mode reads sstatus:
+  1. CPU checks CSR 0x100 → bits 9:8 = 0b01 → S-mode allowed ✓
+  2. Reads the ONE physical register
+  3. Applies bitmask: returns only S-mode bits, M-mode bits read as 0
+
+When S-mode writes sstatus:
+  1. CPU checks CSR 0x100 → S-mode allowed ✓
+  2. Modifies only S-mode bits of the physical register
+     M-mode bits are preserved untouched
+
+When S-mode tries to read mstatus:
+  1. CPU checks CSR 0x300 → bits 9:8 = 0b11 → S-mode DENIED ✗
+  2. Illegal instruction exception. Never touches the register.
+```
+
+S-mode can't use `mstatus` even though it would only touch S-mode
+bits — the permission check is purely on the CSR address, not on which
+bits you're trying to access. `sstatus` is the only door S-mode has.
+
+| S-mode | M-mode | What S-mode sees |
+|--------|--------|-----------------|
+| `sstatus` | `mstatus` | Only S-mode bits (SIE, SPIE, SPP, ...). M-mode bits (MIE, MPIE, MPP) are hidden. Writes go through to `mstatus`. |
+| `sie` | `mie` | Only bits 1, 5, 9 (SSIE, STIE, SEIE). M-mode bits (3, 7, 11) hidden. |
+| `sip` | `mip` | Only bits 1, 5, 9 (SSIP, STIP, SEIP). M-mode bits (3, 7, 11) hidden. |
+
+**Separate registers** — each level has its own independent copy,
+because M-mode and S-mode traps can nest and each needs its own state:
+
+| S-mode | M-mode | Why separate |
+|--------|--------|-------------|
+| `scause` | `mcause` | Each trap level records its own cause |
+| `sepc` | `mepc` | Each trap level saves its own return address |
+| `stval` | `mtval` | Each trap level saves its own trap value |
+| `stvec` | `mtvec` | Each trap level has its own handler address |
+| `sscratch` | `mscratch` | Each trap level has its own scratch register |
+
+The logic: status/enable/pending describe **shared global state** (one
+set of interrupt enables, one privilege mode), so S-mode gets a masked
+view of the same bits. Trap-specific registers describe **per-level
+state** — an M-mode timer interrupt can nest inside an S-mode handler,
+so each level needs its own `xepc`, `xcause`, `xtval`.
+
+Now let's look at each S-mode trap CSR in detail.
+
 ### `stvec` — Supervisor Trap Vector Base Address
 
 This is the most important trap CSR: it tells the CPU **where to jump**

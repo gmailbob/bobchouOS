@@ -6,6 +6,15 @@
 # Boot sequence: set up hardware, configure timer, mret to kmain().
 # Timer handler (timer_vec): schedules next tick, raises SSIP.
 #
+# M-mode CSR usage:
+#   mtvec     — set to timer_vec (our only M-mode handler)
+#   mscratch  — points to timer_scratch (register save area for timer_vec)
+#   mie       — only MTIE enabled; timer is the sole M-mode interrupt
+#   mepc      — hardware-managed (written on trap entry, read by mret)
+#   mcause    — never read; MTIE is the only enabled source, so
+#               timer_vec skips dispatch and handles the tick directly
+#   mtval     — never read; no need for trap context in the timer handler
+#
 # Refer to Lectures 1-1, 2-1, and 2-3.
 
 #include "riscv.h"
@@ -99,7 +108,7 @@ bss_done:
     la    t0, timer_vec
     csrw  mtvec, t0
 
-    # Enable machine timer interrupt.
+    # Enable machine timer interrupt only (see header for rationale).
     li    t0, MIE_MTIE
     csrs  mie, t0
 

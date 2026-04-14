@@ -468,42 +468,88 @@ Jumps to stvec
 S-mode trap handler runs  ✓
 ```
 
-### The delegation registers
+### The cause registers: `mcause` and `scause`
 
-RISC-V provides two CSRs for this:
+Before looking at delegation, we need to understand how the CPU records
+*what happened*. Both `mcause` and `scause` share the same layout:
 
-| CSR | Purpose |
-|-----|---------|
-| `medeleg` | Machine Exception Delegation — which exceptions bypass M-mode and go to S-mode |
-| `mideleg` | Machine Interrupt Delegation — which interrupts bypass M-mode and go to S-mode |
+```
+Bit 63 (high bit):
+  0 = exception (synchronous — caused by the current instruction)
+  1 = interrupt  (asynchronous — caused by external hardware)
 
-Each bit position corresponds to a trap cause code. Setting the bit
-means "this trap goes to S-mode instead of M-mode."
-
-But first — how does the CPU encode trap causes? The `scause`/`mcause`
-register uses **bit 63** (the top bit on RV64) to distinguish interrupts
-from exceptions:
-
-| Bit 63 | Meaning | Lower bits |
-|--------|---------|------------|
-| 0 | Exception (synchronous — caused by the current instruction) | Exception code (0–15) |
-| 1 | Interrupt (asynchronous — caused by external hardware) | Interrupt code (0–11) |
+Bits 62:0 (lower bits):
+  The cause code — same numbering in both registers
+```
 
 For example:
-- `scause = 0x0000000000000002` → bit 63 = 0 → exception, code 2 →
+- `0x0000000000000002` → bit 63 = 0 → exception, code 2 →
   illegal instruction
-- `scause = 0x8000000000000007` → bit 63 = 1 → interrupt, code 7 →
+- `0x8000000000000007` → bit 63 = 1 → interrupt, code 7 →
   machine timer
 
-One register, one top bit — tells you everything about what happened.
-The trap handler reads `scause` and branches on this. The delegation
-registers (`medeleg` for exceptions, `mideleg` for interrupts) mirror
-this split — each one controls the cause codes for its category.
+The `m`/`s` prefix does NOT change the cause code — it indicates
+**who is handling the trap**. If M-mode takes the trap, the cause goes
+into `mcause`. If S-mode takes it, the same cause code goes into
+`scause`. The code itself (2 for illegal instruction, 7 for machine
+timer) is identical in both registers.
 
-### Exception cause codes (`medeleg`)
+### The delegation registers: routing table for traps
 
-The RISC-V spec defines these exception codes (the `scause`/`mcause`
-value when the top bit is 0):
+By default, all traps go to M-mode (`mcause`). The delegation
+registers let M-mode route specific traps to S-mode (`scause`)
+instead. Think of them as a routing table:
+
+```
+mcause / scause — same bit layout, same cause codes
+  Which register gets written depends on who handles the trap
+
+medeleg — bit N maps to exception cause code N
+  Bit N = 1: exception cause N → delegated to S-mode (scause)
+  Bit N = 0: exception cause N → stays in M-mode (mcause)
+
+mideleg — bit N maps to interrupt cause code N
+  Bit N = 1: interrupt cause N → delegated to S-mode (scause)
+  Bit N = 0: interrupt cause N → stays in M-mode (mcause)
+
+(The xcause high bit that distinguishes interrupts from exceptions
+ is not in medeleg/mideleg — the split is implicit: medeleg handles
+ the exception half, mideleg handles the interrupt half.)
+```
+
+When a trap fires, the CPU checks two things: the delegation bit and
+the current privilege mode. Traps never go *downward* — an M-mode trap
+always stays in M-mode, regardless of the delegation bit. Delegation
+only takes effect for traps originating in S-mode or U-mode:
+
+```
+Trap occurs → check delegation bit for this cause code
+
+  Bit = 1 AND trap came from S-mode or U-mode:
+    → S-mode handles it (writes scause/sepc/stval, jumps to stvec)
+
+  Bit = 0, OR trap came from M-mode:
+    → M-mode handles it (writes mcause/mepc/mtval, jumps to mtvec)
+```
+
+Since our kernel runs entirely in S-mode after boot, all our traps
+originate in S-mode, so the delegation bits are the only thing that
+matters for us.
+
+> **Can `scause` contain M-mode cause codes?** Some cause codes describe
+> M-mode events (e.g., interrupt code 7 = machine timer interrupt).
+> These codes *can* appear in `scause` — but only if their `mideleg`
+> bit is set (which it can't be, because those bits are hardwired to
+> 0). So in practice, `scause` never holds M-mode interrupt codes (3,
+> 7, 11). The `scause` register has the same *layout* as `mcause`, but
+> certain bit positions are effectively dead — they'll never appear
+> because the hardware prevents delegation of those causes.
+
+### Exception cause codes
+
+The RISC-V spec defines these exception codes (cause value when
+bit 63 = 0). The "Delegate?" column shows what happens with our
+`medeleg = 0xffff`:
 
 ```
 Bit   Exception                        Delegate?
@@ -517,21 +563,24 @@ Bit   Exception                        Delegate?
  6    Store/AMO address misaligned     Yes
  7    Store/AMO access fault           Yes
  8    Environment call from U-mode     Yes — this is how syscalls work
- 9    Environment call from S-mode     No  — goes to M-mode (SBI call)
+ 9    Environment call from S-mode     Yes — writable, our 0xffff sets it
 10    (reserved)                        —
-11    Environment call from M-mode     No  — stays in M-mode
+11    Environment call from M-mode     No  — hardwired to 0 by spec
 12    Instruction page fault           Yes — kernel handles page faults
 13    Load page fault                  Yes
 14    (reserved)                        —
 15    Store/AMO page fault             Yes
 ```
 
-Exception 9 ("ecall from S-mode") is special: this is how the kernel
-calls firmware services (the SBI — Supervisor Binary Interface). If the
-kernel in S-mode executes `ecall`, it's asking M-mode firmware for help
-(like setting a timer). This should NOT be delegated — it must reach
-M-mode. With `-bios none`, we have no SBI firmware, so this doesn't
-matter yet. But it's good practice to leave it undelegated.
+Exception 9 ("ecall from S-mode") deserves a note: on real hardware
+with SBI firmware (like OpenSBI), bit 9 is typically left *clear* so
+that S-mode ecalls reach M-mode's SBI handler. Our `0xffff` sets it
+because we have no firmware (`-bios none`). The effect: ecall from
+S-mode is delegated to S-mode and shows up in `scause`. We'll handle
+this in Lecture 2-4.
+
+Exception 11 ("ecall from M-mode") is the only `medeleg` bit the spec
+explicitly hardwires to 0 — "medeleg[11] is read-only zero."
 
 > **What is the SBI?**
 >
@@ -566,18 +615,19 @@ matter yet. But it's good practice to leave it undelegated.
 > # a0 = error code on return
 > ```
 >
-> The CPU just sees `ecall` → exception 9 → trap to M-mode. The
-> firmware reads `a7`/`a6`, dispatches the request, and returns via
-> `mret`. Same pattern as Linux syscalls — `ecall` is the "knock on the
-> door," registers carry the message.
+> The CPU just sees `ecall` → exception 9 → trap to M-mode (if bit 9
+> is not delegated). The firmware reads `a7`/`a6`, dispatches the
+> request, and returns via `mret`. Same pattern as Linux syscalls —
+> `ecall` is the "knock on the door," registers carry the message.
 >
 > Real RISC-V boards run OpenSBI firmware in M-mode. bobchouOS runs
 > with QEMU `-bios none` (no firmware), so we handle timers ourselves
 > in M-mode (Round 2-3). You won't see SBI calls in our code.
 
-### Interrupt cause codes (`mideleg`)
+### Interrupt cause codes
 
-Interrupt codes (the `scause`/`mcause` value when the top bit is 1):
+Interrupt codes (cause value when bit 63 = 1). The "Delegate?" column
+shows what happens with our `mideleg = 0xffff`:
 
 ```
 Bit   Interrupt                         Delegate?
@@ -585,19 +635,20 @@ Bit   Interrupt                         Delegate?
  0    (reserved)                         —
  1    Supervisor software interrupt     Yes — we'll use this for timer
  2    (reserved)                         —
- 3    Machine software interrupt        No  — stays in M-mode (hardwired)
+ 3    Machine software interrupt        No  — hardwired to 0
  4    (reserved)                         —
  5    Supervisor timer interrupt        Yes — timer tick
  6    (reserved)                         —
- 7    Machine timer interrupt           No  — stays in M-mode (hardwired)
+ 7    Machine timer interrupt           No  — hardwired to 0
  8    (reserved)                         —
  9    Supervisor external interrupt     Yes — UART, disk, etc.
 10    (reserved)                         —
-11    Machine external interrupt        No  — stays in M-mode (hardwired)
+11    Machine external interrupt        No  — hardwired to 0
 ```
 
-The pattern: M-mode interrupts (bits 3, 7, 11) are never delegated —
-they always go to M-mode. Everything else can be delegated to S-mode.
+The pattern: M-mode interrupts (bits 3, 7, 11) are hardwired to 0 —
+they always go to M-mode, never delegated. Everything else can be
+delegated to S-mode.
 
 ### What xv6 does
 
@@ -608,16 +659,10 @@ w_medeleg(0xffff);    // Delegate all exception types 0-15
 w_mideleg(0xffff);    // Delegate all interrupt types 0-15
 ```
 
-This sets bits 0-15 in both registers. But some bits are **hardwired to
-zero** by the spec and can't actually be set:
-
-- In `mideleg`: bits 3, 7, 11 (M-mode software/timer/external
-  interrupts) — M-mode interrupts can never be delegated
-- In `medeleg`: bits 9 and 11 (ecall from S-mode and M-mode) — these
-  must always reach M-mode
-
-So `0xffff` is a safe "delegate everything possible" value — the
-hardware ignores the bits that can't be delegated.
+This writes `0xffff` (bits 0-15) to both registers. The hardware
+silently ignores writes to hardwired-zero bits. The result: every
+delegatable trap goes to S-mode, and only M-mode interrupts (3, 7,
+11) and ecall-from-M-mode (exception 11) remain in M-mode.
 
 ### What bobchouOS will do
 
@@ -654,9 +699,11 @@ Exception/interrupt from M-mode:
 
 In practice with `0xffff`:
 - Almost everything goes to S-mode (the kernel handles it)
-- Machine timer interrupt (bit 7) stays in M-mode (we'll set up a tiny
-  M-mode handler in Round 2-3)
-- `ecall` from S-mode (exception 9) goes to M-mode (SBI calls)
+- Machine interrupts (bits 3, 7, 11 in `mideleg`) stay in M-mode —
+  hardwired to 0. These can fire while S-mode code is running (e.g.,
+  a machine timer interrupt preempts S-mode), but they always trap to
+  M-mode. We'll set up a tiny M-mode handler for the timer (bit 7)
+  in Round 2-3
 
 ---
 
