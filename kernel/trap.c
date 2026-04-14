@@ -33,10 +33,11 @@ kernel_trap(void) {
     if (scause_val & SCAUSE_INTERRUPT) {
         uint64 code = scause_val & 0xff;
         if (code == IRQ_S_SOFT) {
-            csrw(sip, csrr(sip) & (~SIP_SSIP));
-            if (++ticks % 100 == 0) {
-                kprintf("current ticks=%d\n", ticks);
-            }
+            /* Timer tick (forwarded from M-mode via SSIP).
+             * Clear SSIP so we don't re-trap on sret. */
+            csrw(sip, csrr(sip) & ~SIP_SSIP);
+            if (++ticks % 100 == 0)
+                kprintf("timer: %d seconds\n", (int)(ticks / 100));
         } else {
             panic("kernel_trap: unexpected interrupt code=%d", (int)code);
         }

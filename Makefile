@@ -19,7 +19,8 @@ CFLAGS  = -march=rv64imac_zicsr -mabi=lp64 \
           -fno-strict-aliasing \
           -I kernel/include -I kernel
 
-ASFLAGS = -march=rv64imac_zicsr -mabi=lp64 -g
+ASFLAGS = -march=rv64imac_zicsr -mabi=lp64 -g \
+          -I kernel/include -I kernel
 
 TARGET  = kernel.elf
 

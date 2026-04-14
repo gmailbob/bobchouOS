@@ -3,24 +3,12 @@
 # This is the only file that runs in M-mode. All other kernel code
 # runs in S-mode after mret. Any future M-mode code goes here.
 #
-# It contains:
+# Boot sequence: set up hardware, configure timer, mret to kmain().
+# Timer handler (timer_vec): schedules next tick, raises SSIP.
 #
-# Boot sequence (runs once at startup):
-#   1. Park non-boot harts (only hart 0 should continue)
-#   2. Zero the BSS section (so uninitialized globals start at zero)
-#   3. Set up the stack pointer
-#   4. Configure M-mode CSRs for the M→S switch
-#   5. Delegate traps to S-mode
-#   6. Set up PMP so S-mode can access all memory
-#   7. Set up timer (CLINT, scratch area, mtvec, mie)
-#   8. Execute mret to enter S-mode at kmain()
-#
-# Timer handler (runs on each timer interrupt):
-#   timer_vec — M-mode handler that schedules the next tick and
-#   raises SSIP to forward the interrupt to S-mode.
-#
-# Refer to Lecture 1-1 (Parts 1-3), Lecture 2-1 (Parts 3-7),
-# and Lecture 2-3 (Parts 4-5).
+# Refer to Lectures 1-1, 2-1, and 2-3.
+
+#include "riscv.h"
 
 .section .text.entry
 .global _start
@@ -53,9 +41,9 @@ bss_done:
     # (Supervisor), and write it back. This tells mret which mode
     # to switch to.
     csrr  t0, mstatus
-    li    t1, ~(3 << 11)
+    li    t1, ~MSTATUS_MPP_MASK
     and   t0, t0, t1
-    li    t1, (1 << 11)
+    li    t1, MSTATUS_MPP_S
     or    t0, t0, t1
     csrw  mstatus, t0
 
@@ -78,44 +66,41 @@ bss_done:
     csrw  mideleg, t0
 
     # ---- Step 8: Configure PMP ----
-    # Set pmpaddr0 to 0x3fffffffffffff (all 54 implemented bits = 1)
-    # and pmpcfg0 to 0x0f (TOR mode, RWX). This grants S-mode access
-    # to the entire physical address space.
-    li    t0, 0x3fffffffffffff
+    # Grant S-mode access to the entire physical address space.
+    li    t0, PMP_NAPOT_ALL
     csrw  pmpaddr0, t0
-    li    t0, 0x0f
+    li    t0, PMPCFG_TOR_RWX
     csrw  pmpcfg0, t0
 
     # ---- Step 9: Set up timer ----
-    # Set up the CLINT timer so that periodic interrupts reach S-mode
-    # via the SSIP forwarding trick.
+    # Program the CLINT so periodic timer interrupts reach S-mode
+    # via the SSIP forwarding trick (see Lecture 2-3).
 
-    # 1. Fill the scratch area (timer_scratch) with pre-computed values:
-    #    - scratch[3] = address of mtimecmp for hart 0
-    #    - scratch[4] = timer interval
-    #    (scratch[0..2] are save slots used by timer_vec at runtime)
+    # Fill the scratch area for timer_vec:
+    #   scratch[0..2] = register save slots (used at runtime)
+    #   scratch[3]    = &mtimecmp[0]
+    #   scratch[4]    = timer interval
     la    t0, timer_scratch
-    li    t1, 0x2004000
+    li    t1, CLINT_MTIMECMP(0)
     sd    t1, 24(t0)
-    li    t2, 100000
+    li    t2, TIMER_INTERVAL
     sd    t2, 32(t0)
 
-    # 2. Point mscratch at the scratch area
+    # Point mscratch at the scratch area.
     csrw  mscratch, t0
 
-    # 3. Program the first timer deadline:
-    #    Read mtime (MMIO), add the interval, write to mtimecmp (MMIO)
-    li    t0, 0x200BFF8
-    ld    t0, 0(t0)
-    add   t0, t0, t2
-    sd    t0, 0(t1)
+    # Program the first deadline: mtimecmp = mtime + interval.
+    li    t0, CLINT_MTIME
+    ld    t0, 0(t0)            # t0 = current mtime
+    add   t0, t0, t2           # t0 = mtime + interval
+    sd    t0, 0(t1)            # mtimecmp[0] = first deadline
 
-    # 4. Set mtvec to timer_vec (direct mode, same .align trick as stvec)
+    # Set mtvec to timer_vec (direct mode — .align 4 gives MODE=00).
     la    t0, timer_vec
     csrw  mtvec, t0
 
-    # 5. Enable machine timer interrupt: set mie.MTIE (bit 7)
-    li    t0, 1 << 7
+    # Enable machine timer interrupt.
+    li    t0, MIE_MTIE
     csrs  mie, t0
 
     # ---- Step 10: Enter S-mode ----
@@ -129,41 +114,36 @@ park:
 
 # ---------- M-mode timer interrupt handler ----------
 #
-# timer_vec — called when mtime >= mtimecmp (machine timer interrupt).
-# This runs in M-mode. It must:
-#   1. Swap a0 with mscratch to get the scratch area pointer
-#   2. Save a1, a2, a3 to the scratch area
-#   3. Schedule the next tick: mtimecmp = mtimecmp + interval
-#      (load &mtimecmp and interval from the scratch area)
-#   4. Raise SSIP (set sip bit 1) to notify S-mode
-#   5. Restore a1, a2, a3 from the scratch area
-#   6. Swap a0 back from mscratch
-#   7. mret
-#
+# timer_vec — M-mode handler for machine timer interrupts.
+# Schedules the next tick (mtimecmp += interval) and raises SSIP
+# to forward the event to S-mode. Uses mscratch to save/restore
+# three registers without touching the stack.
 # Refer to Lecture 2-3, Part 4.
 
 .align 4
 .globl timer_vec
 
 timer_vec:
-    csrrw a0, mscratch, a0
-    sd    a1, 0(a0)
-    sd    a2, 8(a0)
-    sd    a3, 16(a0)
-    ld    a1, 24(a0)
-    ld    a2, 32(a0)
-    ld    a3, 0(a1)
+    csrrw a0, mscratch, a0     # a0 = scratch area, mscratch = old a0
+    sd    a1, 0(a0)            # save a1
+    sd    a2, 8(a0)            # save a2
+    sd    a3, 16(a0)           # save a3
 
-    add   a3, a3, a2
-    sd    a3, 0(a1)
+    # Schedule next tick: mtimecmp += interval
+    ld    a1, 24(a0)           # a1 = &mtimecmp[0]
+    ld    a2, 32(a0)           # a2 = interval
+    ld    a3, 0(a1)            # a3 = current mtimecmp
+    add   a3, a3, a2           # a3 = next deadline
+    sd    a3, 0(a1)            # write new mtimecmp
 
-    li    a1, 1 << 1
+    # Raise supervisor software interrupt to notify S-mode.
+    li    a1, SIP_SSIP
     csrs  sip, a1
 
-    ld    a1, 0(a0)
-    ld    a2, 8(a0)
-    ld    a3, 16(a0)
-    csrrw a0, mscratch, a0
+    ld    a1, 0(a0)            # restore a1
+    ld    a2, 8(a0)            # restore a2
+    ld    a3, 16(a0)           # restore a3
+    csrrw a0, mscratch, a0     # restore a0
     mret
 
 # ---------- Timer scratch area (BSS) ----------
