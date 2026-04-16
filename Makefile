@@ -35,7 +35,8 @@ OBJS    = kernel/arch/entry.o \
 
 TEST_OBJS = kernel/test/run_tests.o \
             kernel/test/test_kprintf.o \
-            kernel/test/test_string.o
+            kernel/test/test_string.o \
+            kernel/test/test_trap.o
 
 QEMU    = qemu-system-riscv64
 QFLAGS  = -machine virt -nographic -bios none -kernel $(TARGET)

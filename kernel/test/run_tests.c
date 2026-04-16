@@ -13,6 +13,7 @@ int test_fail = 0;
 /* Test suite declarations — each lives in its own file. */
 void test_kprintf(void);
 void test_string(void);
+void test_trap(void);
 
 void
 run_tests(void) {
@@ -20,6 +21,7 @@ run_tests(void) {
 
     test_kprintf();
     test_string();
+    test_trap();
 
     kprintf("\n=== results: %d passed, %d failed ===\n\n", test_pass, test_fail);
 }
