@@ -22,6 +22,7 @@
  * Uses C99 designated initializers — entries 10 and 14 (reserved)
  * are left as NULL. See Lecture 2-4, Part 4.
  */
+// clang-format off
 static const char *exc_names[] = {
     [EXC_INST_MISALIGN] = "instruction address misaligned",
     [EXC_INST_ACCESS]   = "instruction access fault",
@@ -38,6 +39,7 @@ static const char *exc_names[] = {
     [EXC_LOAD_PAGE]     = "load page fault",
     [EXC_STORE_PAGE]    = "store/AMO page fault",
 };
+// clang-format on
 
 #define NUM_EXC (sizeof(exc_names) / sizeof(exc_names[0]))
 
@@ -46,12 +48,9 @@ static const char *exc_names[] = {
  * for reserved codes or out-of-range values.
  */
 static const char *
-exc_name(uint64 scause)
-{
-    /* TODO: Return the name string from exc_names if scause is in
-     * range and the entry is non-NULL. Otherwise return
-     * "unknown exception". */
-    (void)scause;
+exc_name(uint64 scause) {
+    if (scause < NUM_EXC && exc_names[scause])
+        return exc_names[scause];
     return "unknown exception";
 }
 
@@ -65,6 +64,7 @@ kernel_trap(void) {
     uint64 scause_val = csrr(scause);
     uint64 stval_val = csrr(stval);
     uint64 sstatus_val = csrr(sstatus);
+    uint64 code = scause_val & 0xff;
 
     /* Sanity checks: */
     if (!(sstatus_val & SSTATUS_SPP))
@@ -74,7 +74,6 @@ kernel_trap(void) {
 
     /* Check scause bit 63 to distinguish interrupts vs exceptions. */
     if (scause_val & SCAUSE_INTERRUPT) {
-        uint64 code = scause_val & 0xff;
         if (code == IRQ_S_SOFT) {
             /* Timer tick (forwarded from M-mode via SSIP).
              * Clear SSIP so we don't re-trap on sret. */
@@ -91,35 +90,23 @@ kernel_trap(void) {
          * and dispatch: recoverable exceptions return, fatal ones panic.
          * See Lecture 2-4, Parts 4 and 7.
          */
-
-        /* TODO: Look up the exception name using exc_name(). */
-
-        /* TODO: Detect instruction length at sepc.
-         * Read the 16-bit parcel at sepc_val. Check bits 1:0:
-         *   0b11 → 4-byte instruction
-         *   anything else → 2-byte compressed instruction
-         * Store the result in a variable (e.g., inst_len). */
-
-        /* TODO: Dispatch on scause_val using a switch statement.
-         *
-         * EXC_BREAKPOINT:
-         *   - Print a message showing the breakpoint address (sepc_val)
-         *   - Advance sepc by inst_len (ebreak may be compressed)
-         *   - Return (non-fatal)
-         *
-         * EXC_ECALL_S:
-         *   - Print a message showing the ecall address (sepc_val)
-         *   - Advance sepc by 4 (ecall is always 4 bytes)
-         *   - Return (non-fatal)
-         *
-         * default:
-         *   - Call panic() with the exception name, scause, sepc, stval
-         *     (panic already appends a newline — don't add one in the
-         *     format string)
-         */
-
-        /* Placeholder: remove this panic once you implement the dispatch. */
-        panic("kernel_trap: exception scause=%p sepc=%p stval=%p",
-              (void *)scause_val, (void *)sepc_val, (void *)stval_val);
+        const char *exception = exc_name(code);
+        switch (code) {
+        case EXC_BREAKPOINT: {
+            kprintf("kernel_trap: %s at %p\n", exception, sepc_val);
+            int inst_len = (*(uint16 *)sepc_val & 0b11) == 0b11 ? 4 : 2;
+            csrw(sepc, (uint64)sepc_val + inst_len);
+            break;
+        }
+        case EXC_ECALL_S:
+            kprintf("kernel_trap: %s at %p\n", exception, sepc_val);
+            csrw(sepc, (uint64)sepc_val + 4);
+            break;
+        default:
+            /* EXC_ECALL_U will be handled later. */
+            panic("kernel_trap: exception name=%s scause=%p sepc=%p stval=%p", exception,
+                  (void *)scause_val, (void *)sepc_val, (void *)stval_val);
+            break;
+        }
     }
 }

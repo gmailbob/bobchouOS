@@ -127,5 +127,5 @@ panic(const char *fmt, ...) {
     kprintf("\n");
 
     for (;;)
-        ;
+        asm volatile("wfi");
 }
