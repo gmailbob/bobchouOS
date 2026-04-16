@@ -74,13 +74,18 @@ kernel_trap(void) {
 
     /* Check scause bit 63 to distinguish interrupts vs exceptions. */
     if (scause_val & SCAUSE_INTERRUPT) {
-        if (code == IRQ_S_SOFT) {
+        switch (code) {
+        case IRQ_S_SOFT:
             /* Timer tick (forwarded from M-mode via SSIP).
              * Clear SSIP so we don't re-trap on sret. */
             csrw(sip, csrr(sip) & ~SIP_SSIP);
             if (++ticks % 100 == 0)
                 kprintf("timer: %d seconds\n", (int)(ticks / 100));
-        } else {
+            break;
+
+            /* IRQ_S_EXT: PLIC external interrupts — future round */
+
+        default:
             panic("kernel_trap: unexpected interrupt code=%d", (int)code);
         }
     } else {
@@ -90,23 +95,29 @@ kernel_trap(void) {
          * and dispatch: recoverable exceptions return, fatal ones panic.
          * See Lecture 2-4, Parts 4 and 7.
          */
-        const char *exception = exc_name(code);
+        const char *name = exc_name(scause_val);
+
+        /* Detect instruction length at sepc (4-byte vs 2-byte compressed).
+         * Read the first 16-bit parcel; bits 1:0 = 0x3 means 4-byte. */
+        uint16 inst = *(uint16 *)sepc_val;
+        int inst_len = (inst & 0x3) == 0x3 ? 4 : 2;
+
         switch (code) {
-        case EXC_BREAKPOINT: {
-            kprintf("kernel_trap: %s at %p\n", exception, sepc_val);
-            int inst_len = (*(uint16 *)sepc_val & 0b11) == 0b11 ? 4 : 2;
-            csrw(sepc, (uint64)sepc_val + inst_len);
-            break;
-        }
+        case EXC_BREAKPOINT:
+            kprintf("kernel_trap: %s at %p\n", name, (void *)sepc_val);
+            csrw(sepc, sepc_val + inst_len);
+            return;
+
         case EXC_ECALL_S:
-            kprintf("kernel_trap: %s at %p\n", exception, sepc_val);
-            csrw(sepc, (uint64)sepc_val + 4);
-            break;
+            kprintf("kernel_trap: %s at %p\n", name, (void *)sepc_val);
+            csrw(sepc, sepc_val + 4); /* ecall is always 4 bytes */
+            return;
+
+            /* EXC_ECALL_U: syscall from user process — Phase 6 */
+
         default:
-            /* EXC_ECALL_U will be handled later. */
-            panic("kernel_trap: exception name=%s scause=%p sepc=%p stval=%p", exception,
-                  (void *)scause_val, (void *)sepc_val, (void *)stval_val);
-            break;
+            panic("kernel_trap: %s  scause=%p sepc=%p stval=%p", name, (void *)scause_val,
+                  (void *)sepc_val, (void *)stval_val);
         }
     }
 }
