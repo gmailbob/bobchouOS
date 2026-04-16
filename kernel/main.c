@@ -9,6 +9,10 @@
 #include "kprintf.h"
 #include "riscv.h"
 
+#ifdef RUN_TESTS
+#include "test/test.h"
+#endif
+
 /* Trap vector (defined in kernel_vec.S). */
 extern void kernel_vec(void);
 
@@ -36,6 +40,10 @@ kmain(void) {
     kprintf("sstatus=%p\n", (void *)csrr(sstatus));
     kprintf("kernel: %p .. %p (%d bytes)\n", _kernel_start, _kernel_end,
             (int)(_kernel_end - _kernel_start));
+
+#ifdef RUN_TESTS
+    run_tests();
+#endif
 
     kprintf("\ntimer interrupts enabled, waiting for ticks...\n");
 

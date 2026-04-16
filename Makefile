@@ -3,6 +3,7 @@
 # Usage:
 #   make          Build kernel.elf
 #   make run      Build + launch QEMU
+#   make test     Build with tests + launch QEMU
 #   make debug    Build + launch QEMU with GDB stub (-s -S)
 #   make clean    Remove build artifacts
 
@@ -32,6 +33,10 @@ OBJS    = kernel/arch/entry.o \
           kernel/lib/string.o \
           kernel/lib/kprintf.o
 
+TEST_OBJS = kernel/test/run_tests.o \
+            kernel/test/test_kprintf.o \
+            kernel/test/test_string.o
+
 QEMU    = qemu-system-riscv64
 QFLAGS  = -machine virt -nographic -bios none -kernel $(TARGET)
 
@@ -51,10 +56,18 @@ $(TARGET): $(OBJS) linker.ld
 run: $(TARGET)
 	$(QEMU) $(QFLAGS)
 
+# Test build: clean first so main.o is recompiled with -DRUN_TESTS,
+# then build kernel.elf with test objects linked in.
+test: clean
+	$(MAKE) CFLAGS="$(CFLAGS) -DRUN_TESTS" \
+	        OBJS="$(OBJS) $(TEST_OBJS)" \
+	        $(TARGET)
+	$(QEMU) $(QFLAGS)
+
 debug: $(TARGET)
 	$(QEMU) $(QFLAGS) -s -S
 
 clean:
-	rm -f $(OBJS) $(TARGET)
+	rm -f $(OBJS) $(TEST_OBJS) $(TARGET)
 
-.PHONY: all run debug clean
+.PHONY: all run debug test clean
