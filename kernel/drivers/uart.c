@@ -6,9 +6,12 @@
  */
 
 #include "types.h"
+#include "mem_layout.h"
 
 /* ---- Hardware constants ---- */
 
+/* TODO: Remove this local #define and use UART0_BASE from memlayout.h
+ *       in the register access helpers below. */
 #define UART0 0x10000000UL
 
 /* Register offsets */

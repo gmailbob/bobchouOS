@@ -96,6 +96,31 @@
 #define EXC_LOAD_PAGE       13
 #define EXC_STORE_PAGE      15
 
+/* ---- Page size and alignment (Sv39) ---- */
+
+/*
+ * TODO: Define PGSIZE — the number of bytes in one page.
+ *       This is determined by the Sv39 page table format.
+ *       (Hint: 2^12)
+ */
+
+/*
+ * TODO: Define PGSHIFT — the number of bits in the page offset.
+ *       This is log2(PGSIZE).
+ */
+
+/*
+ * TODO: Define PGROUNDUP(a) — round address a UP to the next
+ *       page boundary. If already aligned, return unchanged.
+ *       (Hint: add PGSIZE-1, then clear the low bits)
+ */
+
+/*
+ * TODO: Define PGROUNDDOWN(a) — round address a DOWN to the
+ *       nearest page boundary.
+ *       (Hint: clear the low PGSHIFT bits)
+ */
+
 /* ---- PMP (Physical Memory Protection) ---- */
 #define PMP_NAPOT_ALL       _UL(0x3fffffffffffff)  /* all 54 addr bits set */
 #define PMPCFG_TOR_RWX      _UL(0x0f)              /* TOR mode, R+W+X */
