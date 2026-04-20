@@ -289,7 +289,7 @@ along:
 
 What we haven't named yet: the *end* of RAM (`0x88000000`) and the
 concept of the free region between the kernel and that end. That's
-what `memlayout.h` will define.
+what `mem_layout.h` will define.
 
 ---
 
@@ -732,18 +732,18 @@ Some we need to add. Some we don't need yet:
 
 xv6 puts `PGSIZE` and alignment macros in `riscv.h` (they're
 architecture-specific — the page size is defined by the RISC-V Sv39
-spec). Platform addresses go in `memlayout.h` (they're
+spec). Platform addresses go in `mem_layout.h` (they're
 machine-specific — a different board would have different addresses).
 
 We'll follow the same split:
 
-- **`memlayout.h`** (new file): `KERNBASE`, `PHYSTOP`, `UART0` (moved
+- **`mem_layout.h`** (new file): `KERNBASE`, `PHYSTOP`, `UART0` (moved
   from `uart.c`), and any future platform addresses
 - **`riscv.h`** (updated): `PGSIZE`, `PGROUNDUP`, `PGROUNDDOWN`
 
 The CLINT constants stay in `riscv.h` for now — they're used by
 `entry.S` (assembly), and `riscv.h` is already included there. We
-could move them to `memlayout.h` later, but there's no pressing reason
+could move them to `mem_layout.h` later, but there's no pressing reason
 to reorganize.
 
 > **Why not put everything in one header?**
@@ -751,9 +751,9 @@ to reorganize.
 > Separation of concerns. `riscv.h` defines things that come from the
 > RISC-V ISA specification — CSR bit positions, page sizes, privilege
 > mode constants. These are the same on every RISC-V machine.
-> `memlayout.h` defines things that come from the *platform* — where
+> `mem_layout.h` defines things that come from the *platform* — where
 > QEMU's `virt` machine puts its devices and RAM. A different board
-> (SiFive HiFive) would have a different `memlayout.h` but the same
+> (SiFive HiFive) would have a different `mem_layout.h` but the same
 > `riscv.h`.
 >
 > In practice, the distinction blurs (is CLINT an ISA thing or a
@@ -991,7 +991,7 @@ byte address and a page number. We don't need it for the allocator,
 but it's used extensively in page table code (Phase 4). Defining it
 now keeps related constants together.
 
-**In `memlayout.h`** (new file, platform constants):
+**In `mem_layout.h`** (new file, platform constants):
 
 ```c
 #define KERNBASE    0x80000000UL    // start of DRAM
@@ -1002,18 +1002,18 @@ now keeps related constants together.
 
 We rename `UART0` to `UART0_BASE` to be more descriptive (it's a base
 address, not a device object). The `uart.c` file will `#include
-"memlayout.h"` and use `UART0_BASE` instead of its local `#define`.
+"mem_layout.h"` and use `UART0_BASE` instead of its local `#define`.
 
 ### What about CLINT and PLIC?
 
 The CLINT constants (`CLINT_BASE`, `CLINT_MTIMECMP`, `CLINT_MTIME`)
 stay in `riscv.h` for now. They're used by `entry.S` (which includes
-`riscv.h` but shouldn't include `memlayout.h` — different concern),
+`riscv.h` but shouldn't include `mem_layout.h` — different concern),
 and they work fine where they are.
 
 The PLIC (`0x0C000000`) isn't defined anywhere yet. We don't need it
 until we add external interrupt handling (probably Phase 5 or later).
-We'll add it to `memlayout.h` when the time comes.
+We'll add it to `mem_layout.h` when the time comes.
 
 ### The complete memory picture with named constants
 
@@ -1058,7 +1058,7 @@ Every address in this diagram is now either a linker symbol or a
 Round 3-1 is code-light. We're creating one new file and updating two
 existing ones:
 
-**New: `kernel/include/memlayout.h`**
+**New: `kernel/include/mem_layout.h`**
 - `KERNBASE` — start of DRAM (0x80000000)
 - `PHYSTOP` — end of DRAM (KERNBASE + 128 MB)
 - `UART0_BASE` — UART base address (moved from `uart.c`)
@@ -1070,18 +1070,18 @@ existing ones:
 - `PGROUNDDOWN(a)` — round down to page boundary
 
 **Updated: `kernel/drivers/uart.c`**
-- Remove local `#define UART0` and use `UART0_BASE` from `memlayout.h`
+- Remove local `#define UART0` and use `UART0_BASE` from `mem_layout.h`
 
 ### File layout
 
 ```
 kernel/
     include/
-        memlayout.h     <-- NEW (platform address constants)
+        mem_layout.h    <-- NEW (platform address constants)
         riscv.h         <-- UPDATE (add PGSIZE, PGSHIFT, PGROUND macros)
         types.h         <-- unchanged
     drivers/
-        uart.c          <-- UPDATE (use UART0_BASE from memlayout.h)
+        uart.c          <-- UPDATE (use UART0_BASE from mem_layout.h)
     main.c              <-- unchanged
     trap.c              <-- unchanged
 ```
@@ -1099,9 +1099,9 @@ kernel/
 
 | Aspect | xv6 | bobchouOS (Round 3-1) |
 |--------|-----|----------------------|
-| Platform constants file | `memlayout.h` | `memlayout.h` (same idea) |
+| Platform constants file | `memlayout.h` | `mem_layout.h` (same idea) |
 | Page size / alignment macros | In `riscv.h` | In `riscv.h` (same) |
-| UART address | In `memlayout.h` | In `memlayout.h` (moved from `uart.c`) |
+| UART address | In `memlayout.h` | In `mem_layout.h` (moved from `uart.c`) |
 | CLINT address | In `memlayout.h` | In `riscv.h` (stays — used by assembly) |
 | `KERNBASE` value | `0x80000000L` | `0x80000000UL` (unsigned — avoids signed overflow) |
 | `PHYSTOP` calculation | `KERNBASE + 128*1024*1024` | Same formula |
@@ -1181,7 +1181,7 @@ are the vocabulary that makes the allocator code readable.
 
 After you read this lecture, we'll:
 
-1. **Create the skeleton** — write `memlayout.h`, add page macros to
+1. **Create the skeleton** — write `mem_layout.h`, add page macros to
    `riscv.h`, and update `uart.c` to use the shared constant. These
    changes are small, so the skeleton will be close to complete (not
    much to fill in as TODOs — the "implementation" is mostly picking
@@ -1215,9 +1215,9 @@ After you read this lecture, we'll:
 
 | Constant | Value | Defined in | Purpose |
 |----------|-------|-----------|---------|
-| `KERNBASE` | `0x80000000` | `memlayout.h` | Start of DRAM |
-| `PHYSTOP` | `0x88000000` | `memlayout.h` | End of DRAM (KERNBASE + 128 MB) |
-| `UART0_BASE` | `0x10000000` | `memlayout.h` | UART device base address |
+| `KERNBASE` | `0x80000000` | `mem_layout.h` | Start of DRAM |
+| `PHYSTOP` | `0x88000000` | `mem_layout.h` | End of DRAM (KERNBASE + 128 MB) |
+| `UART0_BASE` | `0x10000000` | `mem_layout.h` | UART device base address |
 | `PGSIZE` | `4096` | `riscv.h` | Bytes per page |
 | `PGSHIFT` | `12` | `riscv.h` | Bits of page offset (log2 of PGSIZE) |
 | `PGROUNDUP(a)` | — | `riscv.h` | Round up to page boundary |

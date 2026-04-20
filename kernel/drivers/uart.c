@@ -10,10 +10,6 @@
 
 /* ---- Hardware constants ---- */
 
-/* TODO: Remove this local #define and use UART0_BASE from memlayout.h
- *       in the register access helpers below. */
-#define UART0 0x10000000UL
-
 /* Register offsets */
 #define RHR 0 /* Receive Holding Register  (read,  DLAB=0) */
 #define THR 0 /* Transmit Holding Register (write, DLAB=0) */
@@ -32,12 +28,12 @@
 
 static inline uint8
 uart_read_reg(uint32 reg) {
-    return *(volatile uint8 *)(UART0 + reg);
+    return *(volatile uint8 *)(UART0_BASE + reg);
 }
 
 static inline void
 uart_write_reg(uint32 reg, uint8 val) {
-    *(volatile uint8 *)(UART0 + reg) = val;
+    *(volatile uint8 *)(UART0_BASE + reg) = val;
 }
 
 /* ---- Public API ---- */
