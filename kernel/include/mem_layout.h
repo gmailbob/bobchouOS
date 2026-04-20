@@ -13,23 +13,11 @@
 
 #include "riscv.h"
 
-/*
- * KERNBASE — the physical address where DRAM begins
- *       on the QEMU virt machine. The linker script places the
- *       kernel at this address.
- */
-#define KERNBASE (_UL(0x80000000))
+// clang-format off
+#define KERN_BASE    (_UL(0x80000000))            /* start of DRAM */
+#define PHYS_STOP     (_UL(0x88000000))            /* end of DRAM (128 MB) */
 
-/*
- * PHYSTOP — the physical address where DRAM ends.
- *       QEMU virt provides 128 MB of RAM by default.
- *       Express it in terms of KERNBASE.
- */
-#define PHYSTOP (_UL(0x88000000))
-
-/*
- * UART0_BASE — the base address of the 16550 UART.
- */
-#define UART0_BASE (_UL(0x10000000))
+#define UART0_BASE  (_UL(0x10000000))            /* 16550 UART */
+// clang-format on
 
 #endif /* MEM_LAYOUT_H */

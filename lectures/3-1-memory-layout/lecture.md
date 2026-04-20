@@ -22,7 +22,7 @@
 >
 > This lecture maps out the physical address space of QEMU's `virt`
 > machine, defines the constants and macros the allocator needs, and
-> establishes the vocabulary (page, page-aligned, PGSIZE, PGROUNDUP)
+> establishes the vocabulary (page, page-aligned, PG_SIZE, PG_ROUND_UP)
 > that every subsequent phase builds on.
 >
 > By the end of this lecture, you will understand:
@@ -32,8 +32,8 @@
 > - Where MMIO devices live and why they share the physical address space
 > - How the linker script carves up the DRAM region for the kernel
 > - What a "page" is and why 4096 bytes
-> - The free memory region: from kernel end to PHYSTOP
-> - Page alignment macros (PGROUNDUP, PGROUNDDOWN) and why they matter
+> - The free memory region: from kernel end to PHYS_STOP
+> - Page alignment macros (PG_ROUND_UP, PG_ROUND_DOWN) and why they matter
 > - How xv6's `memlayout.h` organizes these constants
 > - What we need now vs. what we'll add in Phase 4 (virtual memory)
 >
@@ -186,7 +186,7 @@ Physical Address          Size        Device / Region
 0x4000_0000               0x40000000  PCIe MMIO (PCI device memory window)
 0x8000_0000               0x8000000   DRAM (128 MB, default)
   ^                                     ^
-  KERNBASE                              PHYSTOP = KERNBASE + 128MB
+  KERN_BASE                             PHYS_STOP = KERN_BASE + 128MB
 ```
 
 Most of these devices we'll never touch in bobchouOS, but here's what
@@ -397,7 +397,7 @@ the allocator to hand out.
 ### The picture
 
 ```
-0x80000000  +------------------+ <-- KERNBASE / _kernel_start
+0x80000000  +------------------+ <-- KERN_BASE / _kernel_start
             |                  |
             |  Kernel image    |     .text, .rodata, .data, .bss, stack
             |  (occupied)      |
@@ -408,20 +408,20 @@ the allocator to hand out.
             |                  |     The page allocator owns this region
             |  (many MB)       |
             |                  |
-            +------------------+ <-- PHYSTOP (0x88000000)
+            +------------------+ <-- PHYS_STOP (0x88000000)
 ```
 
 The free region is:
 
 - **Start:** `_kernel_end` (rounded up to the next page boundary)
-- **End:** `PHYSTOP` (0x88000000 = KERNBASE + 128 MB)
+- **End:** `PHYS_STOP` (0x88000000 = KERN_BASE + 128 MB)
 - **Size:** roughly 128 MB minus the kernel image size
 
 This is where every `kalloc()` will come from — every page table,
 every process stack, every pipe buffer. When `kalloc()` returns NULL,
 we're out of physical memory.
 
-> **What's above PHYSTOP?** Nothing. QEMU's `virt` machine only maps
+> **What's above PHYS_STOP?** Nothing. QEMU's `virt` machine only maps
 > 128 MB of DRAM. Addresses above `0x88000000` don't correspond to any
 > RAM chip or device — the memory controller has nothing to route the
 > request to. A load or store there would cause an access fault
@@ -434,7 +434,7 @@ we're out of physical memory.
 > qemu-system-riscv64 -machine virt -m 1G ...    # DRAM: 0x80000000 - 0xC0000000
 > ```
 >
-> In that case PHYSTOP would need to move accordingly. We hardcode
+> In that case PHYS_STOP would need to move accordingly. We hardcode
 > 128 MB because xv6 does, and it's plenty for our needs.
 >
 > On real hardware, the physical address space above DRAM might contain
@@ -574,62 +574,62 @@ Page alignment matters because:
 
 Two macros are used throughout any OS kernel:
 
-**PGROUNDDOWN** — round an address *down* to the nearest page boundary:
+**PG_ROUND_DOWN** — round an address *down* to the nearest page boundary:
 
 ```c
-#define PGROUNDDOWN(addr) ((addr) & ~(PGSIZE - 1))
+#define PG_ROUND_DOWN(addr) ((addr) & ~(PG_SIZE - 1))
 ```
 
 This clears the low 12 bits. Examples:
 
 ```
-PGROUNDDOWN(0x80001234) = 0x80001000
-PGROUNDDOWN(0x80001000) = 0x80001000  (already aligned — no change)
-PGROUNDDOWN(0x80000FFF) = 0x80000000
+PG_ROUND_DOWN(0x80001234) = 0x80001000
+PG_ROUND_DOWN(0x80001000) = 0x80001000  (already aligned — no change)
+PG_ROUND_DOWN(0x80000FFF) = 0x80000000
 ```
 
-**PGROUNDUP** — round an address *up* to the nearest page boundary:
+**PG_ROUND_UP** — round an address *up* to the nearest page boundary:
 
 ```c
-#define PGROUNDUP(addr)   (((addr) + PGSIZE - 1) & ~(PGSIZE - 1))
+#define PG_ROUND_UP(addr)   (((addr) + PG_SIZE - 1) & ~(PG_SIZE - 1))
 ```
 
-This adds `PGSIZE - 1` (4095) and then clears the low 12 bits. The
+This adds `PG_SIZE - 1` (4095) and then clears the low 12 bits. The
 addition ensures that any non-aligned address gets bumped to the next
 boundary. Examples:
 
 ```
-PGROUNDUP(0x80001234) = 0x80002000
-PGROUNDUP(0x80001000) = 0x80001000  (already aligned — no change)
-PGROUNDUP(0x80000001) = 0x80001000
+PG_ROUND_UP(0x80001234) = 0x80002000
+PG_ROUND_UP(0x80001000) = 0x80001000  (already aligned — no change)
+PG_ROUND_UP(0x80000001) = 0x80001000
 ```
 
-> **The math behind PGROUNDUP.** Let's trace through
-> `PGROUNDUP(0x80001234)` step by step:
+> **The math behind PG_ROUND_UP.** Let's trace through
+> `PG_ROUND_UP(0x80001234)` step by step:
 >
 > ```
 > addr               = 0x80001234
-> PGSIZE - 1         = 0x00000FFF
-> addr + PGSIZE - 1  = 0x80001234 + 0x00000FFF = 0x80002233
-> ~(PGSIZE - 1)      = 0xFFFFFFFFFFFFF000
+> PG_SIZE - 1        = 0x00000FFF
+> addr + PG_SIZE - 1 = 0x80001234 + 0x00000FFF = 0x80002233
+> ~(PG_SIZE - 1)     = 0xFFFFFFFFFFFFF000
 > result & mask       = 0x80002233 & 0xFFFFFFFFFFFFF000 = 0x80002000
 > ```
 >
-> The `+ PGSIZE - 1` is the standard "round up by adding (unit - 1)
+> The `+ PG_SIZE - 1` is the standard "round up by adding (unit - 1)
 > before truncating" trick. It's the same logic as integer ceiling
 > division: `ceil(a/b) = (a + b - 1) / b`. Here, we're doing
-> `ceil(addr / PGSIZE) * PGSIZE`.
+> `ceil(addr / PG_SIZE) * PG_SIZE`.
 >
-> Why `PGSIZE - 1` and not `PGSIZE`? If `addr` is already aligned,
-> adding `PGSIZE` would overshoot by one page. Adding `PGSIZE - 1`
+> Why `PG_SIZE - 1` and not `PG_SIZE`? If `addr` is already aligned,
+> adding `PG_SIZE` would overshoot by one page. Adding `PG_SIZE - 1`
 > keeps it in place:
 >
 > ```
-> PGROUNDUP(0x80001000):
+> PG_ROUND_UP(0x80001000):
 >   0x80001000 + 0xFFF = 0x80001FFF
 >   0x80001FFF & 0xFFFFFFFFFFFFF000 = 0x80001000  (correct — no change)
 >
-> If we used PGSIZE instead of PGSIZE-1:
+> If we used PG_SIZE instead of PG_SIZE-1:
 >   0x80001000 + 0x1000 = 0x80002000
 >   0x80002000 & 0xFFFFFFFFFFFFF000 = 0x80002000  (WRONG — jumped one page)
 > ```
@@ -723,10 +723,10 @@ Some we need to add. Some we don't need yet:
 | `CLINT` / `CLINT_MTIME` / `CLINT_MTIMECMP` | `memlayout.h` | Already in `riscv.h` | Keep where it is |
 | `VIRTIO0` (0x10001000) | `memlayout.h` | Not defined | No (Phase 7+) |
 | `PLIC` (0x0C000000) | `memlayout.h` | Not defined | No (Phase 5+) |
-| `KERNBASE` (0x80000000) | `memlayout.h` | Implicit in `linker.ld` | **Yes** |
-| `PHYSTOP` (0x88000000) | `memlayout.h` | Not defined | **Yes** |
-| `PGSIZE` (4096) | `riscv.h` | Not defined | **Yes** |
-| `PGROUNDUP` / `PGROUNDDOWN` | `riscv.h` | Not defined | **Yes** |
+| `KERNBASE` (0x80000000) | `memlayout.h` | Implicit in `linker.ld` | **Yes** (as `KERN_BASE`) |
+| `PHYSTOP` (0x88000000) | `memlayout.h` | Not defined | **Yes** (as `PHYS_STOP`) |
+| `PGSIZE` (4096) | `riscv.h` | Not defined | **Yes** (as `PG_SIZE`) |
+| `PGROUNDUP` / `PGROUNDDOWN` | `riscv.h` | Not defined | **Yes** (as `PG_ROUND_UP` / `PG_ROUND_DOWN`) |
 
 ### Where to put what
 
@@ -737,9 +737,9 @@ machine-specific — a different board would have different addresses).
 
 We'll follow the same split:
 
-- **`mem_layout.h`** (new file): `KERNBASE`, `PHYSTOP`, `UART0` (moved
+- **`mem_layout.h`** (new file): `KERN_BASE`, `PHYS_STOP`, `UART0` (moved
   from `uart.c`), and any future platform addresses
-- **`riscv.h`** (updated): `PGSIZE`, `PGROUNDUP`, `PGROUNDDOWN`
+- **`riscv.h`** (updated): `PG_SIZE`, `PG_ROUND_UP`, `PG_ROUND_DOWN`
 
 The CLINT constants stay in `riscv.h` for now — they're used by
 `entry.S` (assembly), and `riscv.h` is already included there. We
@@ -759,8 +759,8 @@ to reorganize.
 > In practice, the distinction blurs (is CLINT an ISA thing or a
 > platform thing? Answer: it's a platform thing, but we've already put
 > it in `riscv.h` and assembly depends on it). Don't stress about
-> perfect separation — the important thing is that `KERNBASE` and
-> `PHYSTOP` are named constants in a header, not magic numbers buried
+> perfect separation — the important thing is that `KERN_BASE` and
+> `PHYS_STOP` are named constants in a header, not magic numbers buried
 > in code.
 
 ---
@@ -776,7 +776,7 @@ isn't sloppy code — it reflects a real duality:
 - **Addresses as pointers** — when you want to *read or write* the
   memory: `*(uint64 *)addr = value;`
 - **Addresses as integers** — when you want to *do arithmetic* on the
-  address: `addr + PGSIZE`, `addr & ~0xFFF`, `addr >= KERNBASE`
+  address: `addr + PG_SIZE`, `addr & ~0xFFF`, `addr >= KERN_BASE`
 
 C doesn't let you do arithmetic on `void *` (it's undefined behavior
 in standard C). You can't write `void *next = ptr + 4096;` — the
@@ -784,7 +784,7 @@ compiler doesn't know the element size. So when you need arithmetic,
 you cast to `uint64`, do the math, and cast back to a pointer:
 
 ```c
-void *next_page = (void *)((uint64)ptr + PGSIZE);
+void *next_page = (void *)((uint64)ptr + PG_SIZE);
 ```
 
 xv6's `kalloc.c` is full of these casts. The xv6 book explains:
@@ -962,7 +962,7 @@ symbols in C.
 To use it as an integer for arithmetic:
 
 ```c
-uint64 free_start = PGROUNDUP((uint64)_kernel_end);
+uint64 free_start = PG_ROUND_UP((uint64)_kernel_end);
 ```
 
 Cast the `char *` (array decayed to pointer) to `uint64`, round up to
@@ -979,14 +979,14 @@ Here's everything Round 3-1 introduces:
 **In `riscv.h`** (architecture constants):
 
 ```c
-#define PGSIZE      4096            // bytes per page
-#define PGSHIFT     12              // bits of offset within a page
+#define PG_SIZE      4096            // bytes per page
+#define PG_SHIFT     12              // bits of offset within a page
 
-#define PGROUNDUP(a)   (((a) + PGSIZE - 1) & ~(PGSIZE - 1))
-#define PGROUNDDOWN(a)  ((a) & ~(PGSIZE - 1))
+#define PG_ROUND_UP(a)   (((a) + PG_SIZE - 1) & ~(PG_SIZE - 1))
+#define PG_ROUND_DOWN(a)  ((a) & ~(PG_SIZE - 1))
 ```
 
-`PGSHIFT` (12) is the number of bits you shift to convert between a
+`PG_SHIFT` (12) is the number of bits you shift to convert between a
 byte address and a page number. We don't need it for the allocator,
 but it's used extensively in page table code (Phase 4). Defining it
 now keeps related constants together.
@@ -994,8 +994,8 @@ now keeps related constants together.
 **In `mem_layout.h`** (new file, platform constants):
 
 ```c
-#define KERNBASE    0x80000000UL    // start of DRAM
-#define PHYSTOP     (KERNBASE + 128 * 1024 * 1024)  // end of DRAM
+#define KERN_BASE    0x80000000UL    // start of DRAM
+#define PHYS_STOP     (KERN_BASE + 128 * 1024 * 1024)  // end of DRAM
 
 #define UART0_BASE  0x10000000UL    // 16550 UART (moved from uart.c)
 ```
@@ -1032,7 +1032,7 @@ using named constants:
 0x10001000  +---------------------+  (future: VIRTIO0_BASE)
             |  virtio disk        |
             |       ...           |
-0x80000000  +=====================+  KERNBASE / _kernel_start
+0x80000000  +=====================+  KERN_BASE / _kernel_start
             |  .text              |
             |  .rodata            |
             |  .data              |
@@ -1043,7 +1043,7 @@ using named constants:
             |  FREE PAGES         |  <-- kalloc() hands these out
             |  (allocatable)      |
             |                     |
-0x88000000  +=====================+  PHYSTOP
+0x88000000  +=====================+  PHYS_STOP
 ```
 
 Every address in this diagram is now either a linker symbol or a
@@ -1059,15 +1059,15 @@ Round 3-1 is code-light. We're creating one new file and updating two
 existing ones:
 
 **New: `kernel/include/mem_layout.h`**
-- `KERNBASE` — start of DRAM (0x80000000)
-- `PHYSTOP` — end of DRAM (KERNBASE + 128 MB)
+- `KERN_BASE` — start of DRAM (0x80000000)
+- `PHYS_STOP` — end of DRAM (KERN_BASE + 128 MB)
 - `UART0_BASE` — UART base address (moved from `uart.c`)
 
 **Updated: `kernel/include/riscv.h`**
-- `PGSIZE` — page size (4096)
-- `PGSHIFT` — page offset bits (12)
-- `PGROUNDUP(a)` — round up to page boundary
-- `PGROUNDDOWN(a)` — round down to page boundary
+- `PG_SIZE` — page size (4096)
+- `PG_SHIFT` — page offset bits (12)
+- `PG_ROUND_UP(a)` — round up to page boundary
+- `PG_ROUND_DOWN(a)` — round down to page boundary
 
 **Updated: `kernel/drivers/uart.c`**
 - Remove local `#define UART0` and use `UART0_BASE` from `mem_layout.h`
@@ -1078,7 +1078,7 @@ existing ones:
 kernel/
     include/
         mem_layout.h    <-- NEW (platform address constants)
-        riscv.h         <-- UPDATE (add PGSIZE, PGSHIFT, PGROUND macros)
+        riscv.h         <-- UPDATE (add PG_SIZE, PG_SHIFT, PG_ROUND macros)
         types.h         <-- unchanged
     drivers/
         uart.c          <-- UPDATE (use UART0_BASE from mem_layout.h)
@@ -1103,8 +1103,8 @@ kernel/
 | Page size / alignment macros | In `riscv.h` | In `riscv.h` (same) |
 | UART address | In `memlayout.h` | In `mem_layout.h` (moved from `uart.c`) |
 | CLINT address | In `memlayout.h` | In `riscv.h` (stays — used by assembly) |
-| `KERNBASE` value | `0x80000000L` | `0x80000000UL` (unsigned — avoids signed overflow) |
-| `PHYSTOP` calculation | `KERNBASE + 128*1024*1024` | Same formula |
+| Kernel base value | `KERNBASE` = `0x80000000L` | `KERN_BASE` = `0x80000000UL` (unsigned) |
+| RAM top calculation | `PHYSTOP` = `KERNBASE + 128*1024*1024` | `PHYS_STOP` = `KERN_BASE + 128*1024*1024` |
 | RAM size | Hardcoded 128 MB | Hardcoded 128 MB (same) |
 | Device tree parsing | No | No (same) |
 
@@ -1132,8 +1132,8 @@ struct run {
 struct run *freelist;     // head of the free list
 
 void kinit(void) {
-    // Free every page from _kernel_end (rounded up) to PHYSTOP
-    freerange((void *)PGROUNDUP((uint64)_kernel_end), (void *)PHYSTOP);
+    // Free every page from _kernel_end (rounded up) to PHYS_STOP
+    freerange((void *)PG_ROUND_UP((uint64)_kernel_end), (void *)PHYS_STOP);
 }
 
 void *kalloc(void) {
@@ -1143,13 +1143,13 @@ void *kalloc(void) {
         freelist = r->next;
     // Zero the page before returning (clean slate for page tables)
     if (r)
-        memset((char *)r, 0, PGSIZE);
+        memset((char *)r, 0, PG_SIZE);
     return (void *)r;
 }
 
 void kfree(void *pa) {
     // Push a page onto the free list
-    memset(pa, 1, PGSIZE);           // fill with junk (catch dangling refs)
+    memset(pa, 1, PG_SIZE);           // fill with junk (catch dangling refs)
     struct run *r = (struct run *)pa;
     r->next = freelist;
     freelist = r;
@@ -1157,9 +1157,9 @@ void kfree(void *pa) {
 ```
 
 Notice how every constant from Round 3-1 appears:
-- `PGROUNDUP` — to align the start of free memory
-- `PHYSTOP` — to mark the end of free memory
-- `PGSIZE` — to know how much to zero/junk-fill per page
+- `PG_ROUND_UP` — to align the start of free memory
+- `PHYS_STOP` — to mark the end of free memory
+- `PG_SIZE` — to know how much to zero/junk-fill per page
 - `_kernel_end` — to find where the kernel stops
 
 The allocator stores its linked list node (`struct run`) *inside the
@@ -1215,19 +1215,19 @@ After you read this lecture, we'll:
 
 | Constant | Value | Defined in | Purpose |
 |----------|-------|-----------|---------|
-| `KERNBASE` | `0x80000000` | `mem_layout.h` | Start of DRAM |
-| `PHYSTOP` | `0x88000000` | `mem_layout.h` | End of DRAM (KERNBASE + 128 MB) |
+| `KERN_BASE` | `0x80000000` | `mem_layout.h` | Start of DRAM |
+| `PHYS_STOP` | `0x88000000` | `mem_layout.h` | End of DRAM (KERN_BASE + 128 MB) |
 | `UART0_BASE` | `0x10000000` | `mem_layout.h` | UART device base address |
-| `PGSIZE` | `4096` | `riscv.h` | Bytes per page |
-| `PGSHIFT` | `12` | `riscv.h` | Bits of page offset (log2 of PGSIZE) |
-| `PGROUNDUP(a)` | — | `riscv.h` | Round up to page boundary |
-| `PGROUNDDOWN(a)` | — | `riscv.h` | Round down to page boundary |
+| `PG_SIZE` | `4096` | `riscv.h` | Bytes per page |
+| `PG_SHIFT` | `12` | `riscv.h` | Bits of page offset (log2 of PG_SIZE) |
+| `PG_ROUND_UP(a)` | — | `riscv.h` | Round up to page boundary |
+| `PG_ROUND_DOWN(a)` | — | `riscv.h` | Round down to page boundary |
 
 ### Linker symbols (from `linker.ld`)
 
 | Symbol | Meaning |
 |--------|---------|
-| `_kernel_start` | First byte of kernel image (= KERNBASE) |
+| `_kernel_start` | First byte of kernel image (= KERN_BASE) |
 | `_text_end` | End of `.text` section (page-aligned) |
 | `_bss_start` | Start of `.bss` section |
 | `_bss_end` | End of `.bss` section |
@@ -1237,22 +1237,22 @@ After you read this lecture, we'll:
 
 ```c
 // Round down to page boundary (clear low 12 bits)
-PGROUNDDOWN(0x80001234) = 0x80001000
+PG_ROUND_DOWN(0x80001234) = 0x80001000
 
 // Round up to page boundary (bump then clear low 12 bits)
-PGROUNDUP(0x80001234)   = 0x80002000
-PGROUNDUP(0x80001000)   = 0x80001000  // already aligned — no change
+PG_ROUND_UP(0x80001234)   = 0x80002000
+PG_ROUND_UP(0x80001000)   = 0x80001000  // already aligned — no change
 
 // Decompose address into page number and offset
-PPN    = addr >> PGSHIFT       // = addr >> 12
-offset = addr & (PGSIZE - 1)  // = addr & 0xFFF
+PPN    = addr >> PG_SHIFT       // = addr >> 12
+offset = addr & (PG_SIZE - 1)  // = addr & 0xFFF
 ```
 
 ### Free memory region
 
 ```
-Start:  PGROUNDUP((uint64)_kernel_end)
-End:    PHYSTOP
+Start:  PG_ROUND_UP((uint64)_kernel_end)
+End:    PHYS_STOP
 Size:   ~128 MB minus kernel image size
 Unit:   4096-byte pages
 ```

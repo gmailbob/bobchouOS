@@ -98,30 +98,11 @@
 
 /* ---- Page size and alignment (Sv39) ---- */
 
-/*
- * PGSIZE — the number of bytes in one page.
- *       This is determined by the Sv39 page table format.
- */
-#define PGSIZE              (1 << 12)
+#define PG_SIZE              (1 << 12)       /* 4096 bytes per page */
+#define PG_SHIFT             12              /* log2(PG_SIZE) */
 
-/*
- * PGSHIFT — the number of bits in the page offset.
- *       This is log2(PGSIZE).
- */
-#define PGSHIFT             12
-
-/*
- * PGROUNDUP(a) — round address a UP to the next
- *       page boundary. If already aligned, return unchanged.
- *       (Hint: add PGSIZE-1, then clear the low bits)
- */
-#define PGROUNDUP(a)        ((a + PGSIZE - 1) & ~(PGSIZE - 1))
-
-/*
- * Define PGROUNDDOWN(a) — round address a DOWN to the
- *       nearest page boundary.
- */
-#define PGROUNDDOWN(a)      (a & ~(PGSIZE - 1))
+#define PG_ROUND_UP(a)        (((a) + PG_SIZE - 1) & ~(PG_SIZE - 1))
+#define PG_ROUND_DOWN(a)      ((a) & ~(PG_SIZE - 1))
 
 /* ---- PMP (Physical Memory Protection) ---- */
 #define PMP_NAPOT_ALL       _UL(0x3fffffffffffff)  /* all 54 addr bits set */
