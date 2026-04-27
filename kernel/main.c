@@ -6,6 +6,7 @@
  */
 
 #include "drivers/uart.h"
+#include "kalloc.h"
 #include "kprintf.h"
 #include "riscv.h"
 
@@ -40,6 +41,8 @@ kmain(void) {
     kprintf("sstatus=%p\n", (void *)csrr(sstatus));
     kprintf("kernel: %p .. %p (%d bytes)\n", _kernel_start, _kernel_end,
             (int)(_kernel_end - _kernel_start));
+
+    kinit();
 
 #ifdef RUN_TESTS
     run_tests();

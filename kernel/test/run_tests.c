@@ -14,6 +14,7 @@ int test_fail = 0;
 void test_kprintf(void);
 void test_string(void);
 void test_trap(void);
+void test_kalloc(void);
 
 void
 run_tests(void) {
@@ -22,6 +23,7 @@ run_tests(void) {
     test_kprintf();
     test_string();
     test_trap();
+    test_kalloc();
 
     kprintf("\n=== results: %d passed, %d failed ===\n\n", test_pass, test_fail);
 }
