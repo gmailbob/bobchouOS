@@ -101,20 +101,20 @@
 #define PG_SIZE              (1 << 12)       /* 4096 bytes per page */
 #define PG_SHIFT             12              /* log2(PG_SIZE) */
 
-#define PG_ROUND_UP(a)        (((a) + PG_SIZE - 1) & ~(PG_SIZE - 1))
-#define PG_ROUND_DOWN(a)      ((a) & ~(PG_SIZE - 1))
+#define PG_ROUND_UP(a)       (((a) + PG_SIZE - 1) & ~(PG_SIZE - 1))
+#define PG_ROUND_DOWN(a)     ((a) & ~(PG_SIZE - 1))
 
 /* ---- PMP (Physical Memory Protection) ---- */
-#define PMP_NAPOT_ALL       _UL(0x3fffffffffffff)  /* all 54 addr bits set */
-#define PMPCFG_TOR_RWX      _UL(0x0f)              /* TOR mode, R+W+X */
+#define PMP_NAPOT_ALL        _UL(0x3fffffffffffff)  /* all 54 addr bits set */
+#define PMPCFG_TOR_RWX       _UL(0x0f)              /* TOR mode, R+W+X */
 
-/* ---- CLINT memory-mapped registers (QEMU virt) ---- */
-#define CLINT_BASE          _UL(0x2000000)
+/* ---- CLINT (Core Local Interruptor) memory-mapped registers (QEMU virt) ---- */
+#define CLINT_BASE           _UL(0x2000000)
 #define CLINT_MTIMECMP(hart) (CLINT_BASE + 0x4000 + 8 * (hart))
-#define CLINT_MTIME         (CLINT_BASE + 0xBFF8)
+#define CLINT_MTIME          (CLINT_BASE + 0xBFF8)
 
 /* Timer interval: 100,000 ticks = 10ms at 10 MHz */
-#define TIMER_INTERVAL      _UL(100000)
+#define TIMER_INTERVAL       _UL(100000)
 // clang-format on
 
 #endif /* RISCV_H */
