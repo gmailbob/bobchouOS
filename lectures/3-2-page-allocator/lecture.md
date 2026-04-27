@@ -37,7 +37,7 @@
 > - Why bobchouOS chooses COW fork as the target feature, and how
 >   that shapes the allocator design
 > - The free list data structure and how it threads through free pages
-> - `kinit()` / `free_range()` -- how the free list is built at boot
+> - `kalloc_init()` / `free_range()` -- how the free list is built at boot
 > - `kfree()` -- push a page onto the free list, fill with junk
 > - `kalloc()` -- pop a page off the free list, zero it
 > - Fill-on-free (junk pattern) and zero-on-alloc -- why both exist
@@ -560,12 +560,12 @@ restructuring later.
 
 ---
 
-## Part 4: Initialization -- `kinit()` and `free_range()`
+## Part 4: Initialization -- `kalloc_init()` and `free_range()`
 
 ### The boot-time setup
 
 At boot, the free list is empty and the `struct page` array doesn't
-exist yet. `kinit()` must:
+exist yet. `kalloc_init()` must:
 
 1. Carve the `struct page` array out of the free region (before the
    allocator is running -- we can't `kalloc()` the array because the
@@ -626,14 +626,14 @@ Let's trace through `freerange()`:
 > OS), and neither do we. A production kernel would defer the zeroing
 > (zero pages on demand when allocated, or use a background thread).
 
-### Our `kinit()` -- with `struct page` array bootstrapping
+### Our `kalloc_init()` -- with `struct page` array bootstrapping
 
-Our `kinit()` is slightly more complex than xv6's because it must
+Our `kalloc_init()` is slightly more complex than xv6's because it must
 bootstrap the `struct page` array before the allocator is running.
 We skip the spinlock (single hart).
 
 ```
-Memory layout during kinit():
+Memory layout during kalloc_init():
 
 0x80000000  +-------------------+ <-- KERN_BASE / _kernel_start
             |  Kernel image     |
@@ -684,14 +684,14 @@ A quick calculation for our QEMU setup:
 The array costs 16 pages out of 32,768 -- less than 0.05%. We'll
 print the exact counts at boot.
 
-### The free list after `kinit()`
+### The free list after `kalloc_init()`
 
 Since `free_range()` walks from low addresses to high and `kfree()`
 prepends to the list, the free list ends up in *reverse* order: the
 highest-addressed page is at the head, and the lowest is at the tail.
 
 ```
-After kinit():
+After kalloc_init():
 
 free_list -> page at 0x87FFF000 (highest free page)
                -> page at 0x87FFE000
@@ -1105,9 +1105,9 @@ immediate benefits of the `struct page` array.
 ```
 kernel/
     include/
-        kalloc.h          <-- NEW: struct page, kalloc/kfree/kinit declarations
+        kalloc.h          <-- NEW: struct page, kalloc/kfree/kalloc_init declarations
     kalloc.c              <-- NEW: page allocator implementation
-    main.c                <-- UPDATE: call kinit() at boot
+    main.c                <-- UPDATE: call kalloc_init() at boot
     test/
         test_kalloc.c     <-- NEW: allocator tests
         run_tests.c       <-- UPDATE: add test_kalloc()
@@ -1123,7 +1123,7 @@ struct page {
     uint16 refcount;
 };
 
-void  kinit(void);       // Initialize the allocator (call once at boot)
+void  kalloc_init(void); // Initialize the allocator (call once at boot)
 void *kalloc(void);      // Allocate one zeroed 4 KB page. Returns NULL if OOM.
 void  kfree(void *pa);   // Free a page previously returned by kalloc().
 
@@ -1158,7 +1158,7 @@ static uint64 nr_free;
 static struct page *pages;     // struct page array (one per physical page)
 static uint64 nr_pages;        // total number of physical pages
 
-static void free_range(void *pa_start, void *pa_end);
+static void free_range(uint64 pa_start, uint64 pa_end);
 
 struct page *
 pa_to_page(uint64 pa)
@@ -1168,7 +1168,7 @@ pa_to_page(uint64 pa)
 }
 
 void
-kinit(void)
+kalloc_init(void)
 {
     nr_pages = (PHYS_STOP - KERN_BASE) / PG_SIZE;
 
@@ -1177,22 +1177,22 @@ kinit(void)
     memset(pages, 0, nr_pages * sizeof(struct page));
 
     // Free pages start after the struct page array.
-    char *free_start = (char *)PG_ROUND_UP(
+    uint64 free_start = PG_ROUND_UP(
         (uint64)pages + nr_pages * sizeof(struct page));
-    free_range(free_start, (void *)PHYS_STOP);
+    free_range(free_start, PHYS_STOP);
 
-    kprintf("kinit: %d free pages (%d KB), page array = %d KB\n",
+    kprintf("kalloc_init: %d free pages (%d KB), page array = %d KB\n",
             nr_free, nr_free * (PG_SIZE / 1024),
             (nr_pages * sizeof(struct page)) / 1024);
 }
 
 static void
-free_range(void *pa_start, void *pa_end)
+free_range(uint64 pa_start, uint64 pa_end)
 {
-    char *p = (char *)PG_ROUND_UP((uint64)pa_start);
-    for (; p + PG_SIZE <= (char *)pa_end; p += PG_SIZE) {
-        pa_to_page((uint64)p)->refcount = 1;  // kfree expects refcount == 1
-        kfree(p);
+    uint64 pa;
+    for (pa = PG_ROUND_UP(pa_start); pa + PG_SIZE <= pa_end; pa += PG_SIZE) {
+        pa_to_page(pa)->refcount = 1;  // kfree expects refcount == 1
+        kfree((void *)pa);
     }
 }
 
@@ -1240,7 +1240,7 @@ kalloc(void)
 |--------|-----|-----------|
 | Per-page metadata | None | `struct page` array with `uint16 refcount` |
 | `struct run` | Only data structure | Still used for free list threading; `struct page` tracks state externally |
-| `kinit()` | `initlock` + `freerange` | Bootstrap `struct page` array + `free_range` + print stats |
+| `kalloc_init()` / `kinit()` | `initlock` + `freerange` | Bootstrap `struct page` array + `free_range` + print stats |
 | `kfree()` validation | `panic("kfree")` for all errors | Separate panics + refcount check (catches double free) |
 | `kfree()` fill | `memset(pa, 1, PGSIZE)` | `memset(pa, 1, PG_SIZE)` (same pattern) |
 | `kalloc()` fill | `memset(r, 5, PGSIZE)` (junk) | `memset(r, 0, PG_SIZE)` (zero) |
@@ -1276,14 +1276,14 @@ kmain(void) {
     kprintf("\nbobchouOS is booting...\n");
     ...
 
-    kinit();   // <-- NEW: initialize the page allocator
+    kalloc_init();   // <-- NEW: initialize the page allocator
 
     ...
 }
 ```
 
-The `kinit()` call must come after `uart_init()` (so we can print)
-and after setting `stvec` (so if `kinit()` triggers an exception,
+The `kalloc_init()` call must come after `uart_init()` (so we can print)
+and after setting `stvec` (so if `kalloc_init()` triggers an exception,
 the trap handler is ready). It should come before anything that needs
 to allocate pages (nothing yet, but Phase 4's page table setup will).
 
@@ -1294,7 +1294,7 @@ bobchouOS is booting...
 running in S-mode
 sstatus=0x8000000200006022
 kernel: 0x80000000 .. 0x8000XXXX (NNNNN bytes)
-kinit: 32739 free pages (130956 KB), page array = 64 KB
+kalloc_init: 32739 free pages (130956 KB), page array = 64 KB
 
 timer interrupts enabled, waiting for ticks...
 timer: 1 seconds
@@ -1368,7 +1368,7 @@ After reading this lecture:
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `kinit()` | `void kinit(void)` | Initialize allocator. Call once in `kmain()`. |
+| `kalloc_init()` | `void kalloc_init(void)` | Initialize allocator. Call once in `kmain()`. |
 | `kalloc()` | `void *kalloc(void)` | Allocate one zeroed 4 KB page (refcount set to 1). Returns NULL if OOM. |
 | `kfree()` | `void kfree(void *pa)` | Free a page (refcount must be 1). Panics on double free. |
 | `pa_to_page()` | `struct page *pa_to_page(uint64 pa)` | Look up the `struct page` for a physical address. O(1). |
@@ -1431,9 +1431,9 @@ static uint64 nr_free;        // number of free pages
 
 | File | Change |
 |------|--------|
-| `kernel/include/kalloc.h` | **NEW** -- `struct page`, `kinit`, `kalloc`, `kfree`, `pa_to_page` |
+| `kernel/include/kalloc.h` | **NEW** -- `struct page`, `kalloc_init`, `kalloc`, `kfree`, `pa_to_page` |
 | `kernel/kalloc.c` | **NEW** -- allocator implementation with struct page array |
-| `kernel/main.c` | **UPDATE** -- call `kinit()` |
+| `kernel/main.c` | **UPDATE** -- call `kalloc_init()` |
 | `kernel/test/test_kalloc.c` | **NEW** -- allocator tests |
 | `kernel/test/run_tests.c` | **UPDATE** -- register `test_kalloc()` |
 | `Makefile` | **UPDATE** -- add `kalloc.o`, `test_kalloc.o` |

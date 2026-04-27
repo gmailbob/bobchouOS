@@ -42,7 +42,7 @@ kmain(void) {
     kprintf("kernel: %p .. %p (%d bytes)\n", _kernel_start, _kernel_end,
             (int)(_kernel_end - _kernel_start));
 
-    kinit();
+    kalloc_init();
 
 #ifdef RUN_TESTS
     run_tests();
