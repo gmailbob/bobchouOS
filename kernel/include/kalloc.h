@@ -17,9 +17,9 @@ struct page {
     uint16 refcount;
 };
 
-void  kinit(void);
+void kinit(void);
 void *kalloc(void);
-void  kfree(void *pa);
+void kfree(void *pa);
 
 struct page *pa_to_page(uint64 pa);
 

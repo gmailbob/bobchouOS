@@ -59,11 +59,9 @@ test_kalloc(void) {
 
     /* Refcount is 0 after free, 1 after re-alloc. */
     kfree(p3);
-    TEST_ASSERT(pa_to_page((uint64)p3)->refcount == 0,
-                "refcount == 0 after kfree");
+    TEST_ASSERT(pa_to_page((uint64)p3)->refcount == 0, "refcount == 0 after kfree");
     void *p4 = kalloc();
-    TEST_ASSERT(pa_to_page((uint64)p4)->refcount == 1,
-                "refcount == 1 after re-alloc");
+    TEST_ASSERT(pa_to_page((uint64)p4)->refcount == 1, "refcount == 1 after re-alloc");
 
     /* Clean up: free everything we allocated. */
     kfree(p4);

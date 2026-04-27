@@ -235,6 +235,15 @@ You'll also see `static` on functions (not just variables) to keep
 helpers file-private, preventing name collisions and making it clear
 what's part of the module's public interface vs internal implementation.
 
+Note that `static` only applies to **variables and functions** — it
+controls linkage (symbol visibility). Type definitions (`struct`,
+`enum`, `union`, `typedef`) don't have linkage. A `struct run { ... }`
+defined inside a `.c` file is already invisible to other translation
+units — not because of `static`, but because each `.c` file is
+compiled independently and type definitions aren't exported to the
+linker. If multiple files need the same struct, you put the definition
+in a shared `.h` file that they all include.
+
 ### How the linker resolves symbols
 
 When the linker combines `.o` files into an ELF binary, it:

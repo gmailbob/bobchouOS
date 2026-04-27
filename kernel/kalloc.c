@@ -21,11 +21,12 @@ struct run {
     struct run *next;
 };
 
-static struct run *free_list;
-static uint64 nr_free;
-
 static struct page *pages;
 static uint64 nr_pages;
+
+static struct run *free_list;
+static uint64 free_start;
+static uint64 nr_free;
 
 static void free_range(void *pa_start, void *pa_end);
 
@@ -36,11 +37,8 @@ static void free_range(void *pa_start, void *pa_end);
  * The index is the page's offset from KERN_BASE, divided by PG_SIZE.
  */
 struct page *
-pa_to_page(uint64 pa)
-{
-    /* TODO */
-    (void)pa;
-    return NULL;
+pa_to_page(uint64 pa) {
+    return pages + ((pa - KERN_BASE) >> PG_SHIFT);
 }
 
 /*
@@ -55,9 +53,19 @@ pa_to_page(uint64 pa)
  *   6. Print boot diagnostic: free pages, KB, array size
  */
 void
-kinit(void)
-{
-    /* TODO */
+kinit(void) {
+    nr_pages = (PHYS_STOP - KERN_BASE) >> PG_SHIFT;
+
+    pages = (struct page *)PG_ROUND_UP((uint64)_kernel_end);
+    // uint64 i;
+    // for (i = 0; i < nr_pages; i++) {
+    //     (pages + i)->refcount = 0;
+    // }
+
+    free_start = KERN_BASE + sizeof(struct page) * nr_pages;
+    free_range((void *)free_start, (void *)PHYS_STOP);
+
+    kprintf("free pages=%d, pages size=%d", (int)nr_free, (int)nr_pages);
 }
 
 /*
@@ -68,11 +76,12 @@ kinit(void)
  * kfree() call (kfree expects refcount == 1).
  */
 static void
-free_range(void *pa_start, void *pa_end)
-{
-    /* TODO */
-    (void)pa_start;
-    (void)pa_end;
+free_range(void *pa_start, void *pa_end) {
+    uint64 pa;
+    for (pa = PG_ROUND_UP((uint64)pa_start); pa < PHYS_STOP; pa += PG_SIZE) {
+        pa_to_page(pa)->refcount = 1;
+        kfree((void *)pa);
+    }
 }
 
 /*
@@ -83,20 +92,20 @@ free_range(void *pa_start, void *pa_end)
  * Set refcount to 0, fill the page with junk (0x01), prepend to free list.
  */
 void
-kfree(void *pa)
-{
-    /* TODO: validate pa
-     *   - page-aligned?
-     *   - at or above the start of the free region?
-     *     (above the struct page array, not inside the kernel)
-     *   - below PHYS_STOP?
-     */
+kfree(void *pa) {
+    if ((uint64)pa % PG_SIZE || (uint64)pa < free_start || (uint64)pa >= PHYS_STOP)
+        panic("kfree: invalid physical address=%p", pa);
 
-    /* TODO: check refcount == 1 via pa_to_page(), then set to 0 */
+    struct page *p = pa_to_page((uint64)pa);
+    if (p->refcount > 1)
+        panic("kfree: refcount=%d", p->refcount);
+    p->refcount = 0;
 
-    /* TODO: fill page with junk (memset to 1) */
+    memset(pa, 1, PG_SIZE);
 
-    /* TODO: prepend to free_list, increment nr_free */
+    ((struct run *)pa)->next = free_list;
+    free_list = pa;
+    nr_free++;
 }
 
 /*
@@ -107,8 +116,15 @@ kfree(void *pa)
  * if out of memory.
  */
 void *
-kalloc(void)
-{
-    /* TODO */
-    return NULL;
+kalloc(void) {
+    if (!free_list)
+        return NULL;
+
+    struct run *p = free_list;
+    free_list = free_list->next;
+
+    pa_to_page((uint64)p)->refcount = 1;
+    memset(p, 0, PG_SIZE);
+    nr_free--;
+    return p;
 }
