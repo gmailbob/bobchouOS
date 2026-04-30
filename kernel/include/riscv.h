@@ -46,6 +46,16 @@
 
 #define csrw(csr, val) ({ asm volatile("csrw " #csr ", %0" : : "r"(val)); })
 
+/* ---- TLB flush ---- */
+static inline void
+sfence_vma(void) {
+    asm volatile("sfence.vma zero, zero");
+}
+
+/* ---- satp helpers (Sv39) ---- */
+#define SATP_SV39   (8UL << 60)
+#define MAKE_SATP(root_pt) (SATP_SV39 | ((uint64)(root_pt) >> 12))
+
 #endif /* !__ASSEMBLER__ */
 
 // clang-format off

@@ -15,9 +15,11 @@
 
 // clang-format off
 #define KERN_BASE    (_UL(0x80000000))            /* start of DRAM */
-#define PHYS_STOP     (_UL(0x88000000))            /* end of DRAM (128 MB) */
+#define PHYS_STOP    (_UL(0x88000000))            /* end of DRAM (128 MB) */
 
-#define UART0_BASE  (_UL(0x10000000))            /* 16550 UART */
+#define UART0_BASE   (_UL(0x10000000))            /* 16550 UART */
+#define PLIC_BASE    (_UL(0x0C000000))            /* Platform-Level Interrupt Controller */
+#define PLIC_SIZE    (_UL(0x400000))              /* 4 MB — matches xv6 */
 // clang-format on
 
 #endif /* MEM_LAYOUT_H */

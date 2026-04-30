@@ -9,6 +9,7 @@
 #include "kalloc.h"
 #include "kprintf.h"
 #include "riscv.h"
+#include "vm.h"
 
 #ifdef RUN_TESTS
 #include "test/test.h"
@@ -43,6 +44,8 @@ kmain(void) {
             (int)(_kernel_end - _kernel_start));
 
     kalloc_init();
+    vm_init();
+    vm_init_hart();
 
 #ifdef RUN_TESTS
     run_tests();

@@ -30,6 +30,7 @@ OBJS    = kernel/arch/entry.o \
           kernel/main.o \
           kernel/trap.o \
           kernel/kalloc.o \
+          kernel/vm.o \
           kernel/drivers/uart.o \
           kernel/lib/string.o \
           kernel/lib/kprintf.o
@@ -38,7 +39,8 @@ TEST_OBJS = kernel/test/run_tests.o \
             kernel/test/test_kprintf.o \
             kernel/test/test_string.o \
             kernel/test/test_trap.o \
-            kernel/test/test_kalloc.o
+            kernel/test/test_kalloc.o \
+            kernel/test/test_vm.o
 
 QEMU    = qemu-system-riscv64
 QFLAGS  = -machine virt -nographic -bios none -kernel $(TARGET)
