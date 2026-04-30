@@ -1313,8 +1313,8 @@ Following bobchouOS naming conventions:
 
 | xv6 name | bobchouOS name | Notes |
 |---|---|---|
-| `kvminit` | `vm_init` | Module-prefixed, like `kalloc_init` |
-| `kvminithart` | `vm_init_hart` | Clearer word separation |
+| `kvminit` | `vm_create_kernel_pt` | Describes what it does: build the kernel page table |
+| `kvminithart` | `vm_enable_paging` | Describes what it does: write satp, turn paging on |
 | `kvmmap` | `kvm_map` | Maps into kernel page table |
 | `mappages` | `map_pages` | snake_case |
 | `walk` | `walk` | Already a single word |
@@ -1337,8 +1337,8 @@ kernel/
         vm.h              <-- NEW: pte_t, PTE flags, inline helpers, declarations
         riscv.h           <-- UPDATE: add sfence_vma(), SATP_SV39, MAKE_SATP
         mem_layout.h      <-- UPDATE: add PLIC_BASE, PLIC_SIZE
-    vm.c                  <-- NEW: walk, map_pages, vm_init, vm_init_hart
-    main.c                <-- UPDATE: call vm_init() and vm_init_hart()
+    vm.c                  <-- NEW: walk, map_pages, vm_create_kernel_pt, vm_enable_paging
+    main.c                <-- UPDATE: call vm_create_kernel_pt() and vm_enable_paging()
     test/
         test_vm.c         <-- NEW: page table tests
         run_tests.c       <-- UPDATE: add test_vm()
@@ -1350,7 +1350,7 @@ Makefile                  <-- UPDATE: add vm.o and test_vm.o
 Defines `pte_t` as `uint64`, PTE flag constants (`PTE_V` through
 `PTE_D`), inline conversion helpers (`pa_to_pte`, `pte_to_pa`,
 `pte_flags`), the `PX(level, va)` macro for extracting VPN indices,
-`MAX_VA`, and function declarations for `vm_init`, `vm_init_hart`,
+`MAX_VA`, and function declarations for `vm_create_kernel_pt`, `vm_enable_paging`,
 `walk`, and `map_pages`.
 
 Key design choices:
@@ -1394,11 +1394,11 @@ automatically.
 **`kvm_map(va, pa, size, perm)`** — thin wrapper that calls
 `map_pages()` on `kernel_pagetable` and panics on failure.
 
-**`vm_init()`** — allocates and zeroes the root page table page,
+**`vm_create_kernel_pt()`** — allocates and zeroes the root page table page,
 then calls `kvm_map()` for each region: PLIC (RW), UART (RW),
 kernel text (R-X), and `_text_end` through `PHYS_STOP` (RW).
 
-**`vm_init_hart()`** — `sfence_vma()`, write `satp` with
+**`vm_enable_paging()`** — `sfence_vma()`, write `satp` with
 `MAKE_SATP(kernel_pagetable)`, `sfence_vma()` again. Paging is on.
 
 ### Differences from xv6
@@ -1412,7 +1412,7 @@ kernel text (R-X), and `_text_end` through `PHYS_STOP` (RW).
 | CLINT mapped | No | No |
 | Trampoline | Mapped at MAXVA | Not yet (Phase 5/6) |
 | Kernel stacks | Per-process with guard pages | Not yet (Phase 5/6) |
-| Init function | `kvminit()` + `kvminithart()` | `vm_init()` + `vm_init_hart()` |
+| Init function | `kvminit()` + `kvminithart()` | `vm_create_kernel_pt()` + `vm_enable_paging()` |
 | Map helper | `kvmmap()` | `kvm_map()` |
 | Test coverage | None | `test_vm.c` |
 
@@ -1439,16 +1439,16 @@ kmain(void) {
 
     kalloc_init();
 
-    vm_init();        // <-- NEW: build kernel page table
-    vm_init_hart();   // <-- NEW: enable paging (Sv39)
+    vm_create_kernel_pt();        // <-- NEW: build kernel page table
+    vm_enable_paging();   // <-- NEW: enable paging (Sv39)
 
     ...
 }
 ```
 
-`vm_init()` must come after `kalloc_init()` (it calls `kalloc()` to
-allocate page table pages). `vm_init_hart()` must come after
-`vm_init()` (it installs the page table that `vm_init()` built).
+`vm_create_kernel_pt()` must come after `kalloc_init()` (it calls `kalloc()` to
+allocate page table pages). `vm_enable_paging()` must come after
+`vm_create_kernel_pt()` (it installs the page table that `vm_create_kernel_pt()` built).
 
 ### Expected boot output
 
@@ -1458,8 +1458,8 @@ running in S-mode
 sstatus=0x8000000200006022
 kernel: 0x80000000 .. 0x8000XXXX (NNNNN bytes)
 kalloc_init: 32739 free pages (130956 KB), page array = 64 KB
-vm_init: kernel page table at 0x8XXXXXXX
-vm_init_hart: paging enabled (Sv39)
+vm_create_kernel_pt: page table at 0x8XXXXXXX
+vm_enable_paging: Sv39 enabled
 
 timer interrupts enabled, waiting for ticks...
 timer: 1 seconds
@@ -1467,7 +1467,7 @@ timer: 2 seconds
 ...
 ```
 
-After `vm_init_hart`, paging is on but the kernel continues normally
+After `vm_enable_paging`, paging is on but the kernel continues normally
 — the identity mapping means all existing pointers and addresses
 remain valid. Timer interrupts keep firing. The only difference is
 that unmapped addresses now cause page faults instead of undefined
@@ -1540,14 +1540,14 @@ kmain():
         Build struct page array
         Build free list (31K pages)
 
-    vm_init()                          ← NEW
+    vm_create_kernel_pt()                          ← NEW
         Allocate root page table page (kalloc)
         Map PLIC     (identity, RW)
         Map UART     (identity, RW)
         Map kernel text (identity, R-X)
         Map _text_end through PHYS_STOP (identity, RW)
 
-    vm_init_hart()                     ← NEW
+    vm_enable_paging()                     ← NEW
         sfence.vma
         csrw satp, MAKE_SATP(kernel_pagetable)
         sfence.vma

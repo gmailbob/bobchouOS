@@ -78,8 +78,8 @@ pte_flags(pte_t pte) {
 
 /* ---- Function declarations ---- */
 
-void vm_init(void);
-void vm_init_hart(void);
+void vm_create_kernel_pt(void);
+void vm_enable_paging(void);
 pte_t *walk(pte_t *root_pt, uint64 va, int alloc);
 int map_pages(pte_t *root_pt, uint64 va, uint64 size, uint64 pa, int perm);
 

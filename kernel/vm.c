@@ -31,12 +31,15 @@ static pte_t *kernel_root_pt;
  *   - If the PTE is valid, follow the pointer (pte_to_pa).
  *   - If invalid and alloc=1, allocate a new table page (kalloc),
  *     zero it, and install a pointer PTE (pa_to_pte | PTE_V).
- *   - If invalid and alloc=0, return NULL.
+ *   - If invalid and alloc=0, or if kalloc fails, return NULL.
  * Returns a pointer to the level-0 PTE (so the caller can read
- * or write it), or NULL on failure.
+ * or write it), or NULL on failure. The caller decides whether to
+ * panic (boot-time) or handle gracefully (runtime).
  */
 pte_t *
 walk(pte_t *root_pt, uint64 va, int alloc) {
+    if (va >= MAX_VA)
+        panic("walk: va >= MAX_VA");
     pte_t *curr_table = root_pt, *p;
     for (int level = 2; level > 0; level--) {
         p = &curr_table[PX(level, va)];
@@ -44,7 +47,7 @@ walk(pte_t *root_pt, uint64 va, int alloc) {
             curr_table = (pte_t *)pte_to_pa(*p);
         else if (alloc) {
             if (!(curr_table = kalloc()))
-                panic("walk: failed to kalloc");
+                return NULL;
             *p = pa_to_pte((uint64)curr_table) | PTE_V;
         } else
             return NULL;
@@ -69,9 +72,15 @@ walk(pte_t *root_pt, uint64 va, int alloc) {
  */
 int
 map_pages(pte_t *root_pt, uint64 va, uint64 size, uint64 pa, int perm) {
+    if (size == 0)
+        panic("map_pages: size == 0");
+    if (va % PG_SIZE || pa % PG_SIZE || size % PG_SIZE)
+        panic("map_pages: not page-aligned");
     int nr_page = size >> PG_SHIFT;
     while (nr_page--) {
         pte_t *leaf = walk(root_pt, va, 1);
+        if (!leaf)
+            return -1;
         if (*leaf & PTE_V)
             panic("map_pages: double-map va=%p", (void *)va);
         *leaf = pa_to_pte(pa) | perm | PTE_V | PTE_A | PTE_D;
@@ -89,12 +98,11 @@ map_pages(pte_t *root_pt, uint64 va, uint64 size, uint64 pa, int perm) {
 static void
 kvm_map(uint64 va, uint64 pa, uint64 size, int perm) {
     if (map_pages(kernel_root_pt, va, size, pa, perm))
-        panic("kvm_map: failed to map va=%p to pa=%p", (void *)va, (void *)pa);
-    kprintf("\nkvm_map: mapped va=%p to pa=%p\n", (void *)va, (void *)pa);
+        panic("kvm_map");
 }
 
 /*
- * vm_init — Build the kernel page table.
+ * vm_create_kernel_pt — Build the kernel page table.
  *
  * Called once from kmain() after kalloc_init().
  * Must:
@@ -106,20 +114,21 @@ kvm_map(uint64 va, uint64 pa, uint64 size, int perm) {
  *   6. Print diagnostic.
  */
 void
-vm_init(void) {
+vm_create_kernel_pt(void) {
     if (!(kernel_root_pt = (pte_t *)kalloc()))
         panic("vm_init: failed to kalloc");
     kvm_map(PLIC_BASE, PLIC_BASE, PLIC_SIZE, PTE_R | PTE_W);
     kvm_map(UART0_BASE, UART0_BASE, PG_SIZE, PTE_R | PTE_W);
     kvm_map((uint64)_kernel_start, (uint64)_kernel_start, (uint64)_text_end - (uint64)_kernel_start,
-            PTE_R | PTE_X); /*. = ALIGN(4096) before _text_end*/
+            PTE_R | PTE_X);
     kvm_map((uint64)_text_end, (uint64)_text_end, PHYS_STOP - (uint64)_text_end, PTE_R | PTE_W);
+    kprintf("vm_create_kernel_pt: page table at %p\n", kernel_root_pt);
 }
 
 /*
- * vm_init_hart — Install the kernel page table and enable paging.
+ * vm_enable_paging — Write satp to activate the kernel page table.
  *
- * Called once from kmain() after vm_init().
+ * Called once from kmain() after vm_create_kernel_pt().
  * Must:
  *   1. sfence_vma() — ensure page table writes are visible to hardware walker
  *   2. csrw(satp, MAKE_SATP(kernel_root_pt)) — enable Sv39
@@ -130,8 +139,9 @@ vm_init(void) {
  * page table. The identity mapping ensures the kernel keeps working.
  */
 void
-vm_init_hart(void) {
+vm_enable_paging(void) {
     sfence_vma();
     csrw(satp, MAKE_SATP(kernel_root_pt));
     sfence_vma();
+    kprintf("vm_enable_paging: Sv39 enabled\n");
 }

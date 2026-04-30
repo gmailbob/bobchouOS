@@ -44,8 +44,8 @@ kmain(void) {
             (int)(_kernel_end - _kernel_start));
 
     kalloc_init();
-    vm_init();
-    vm_init_hart();
+    vm_create_kernel_pt();
+    vm_enable_paging();
 
 #ifdef RUN_TESTS
     run_tests();

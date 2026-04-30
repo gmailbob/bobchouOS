@@ -53,12 +53,14 @@ test_vm(void) {
     TEST_ASSERT((*found & PTE_W) != 0, "mapped PTE has W bit");
     TEST_ASSERT(pte_to_pa(*found) == 0x80010000, "mapped PTE points to correct PA");
 
-    /* walk for an unmapped address should return NULL (alloc=0) */
-    pte_t *missing = walk(pt, 0x2000, 0);
+    /* walk for a VA with no intermediate pages should return NULL (alloc=0).
+     * 0x40000000 has VPN[2]=1 — no L1 table exists for it. */
+    pte_t *missing = walk(pt, 0x40000000, 0);
     TEST_ASSERT(missing == NULL, "walk returns NULL for unmapped VA");
 
-    /* walk with alloc=1 should create intermediate pages */
-    pte_t *created = walk(pt, 0x2000, 1);
+    /* walk with alloc=1 should create intermediate pages.
+     * 0x80000000 has VPN[2]=2 — no L1/L0 tables exist for it yet. */
+    pte_t *created = walk(pt, 0x80000000, 1);
     TEST_ASSERT(created != NULL, "walk(alloc=1) creates PTE");
     TEST_ASSERT((*created & PTE_V) == 0, "newly created PTE is not yet valid");
 
