@@ -57,8 +57,7 @@ kalloc_init(void) {
  */
 static void
 free_range(uint64 pa_start, uint64 pa_end) {
-    uint64 pa;
-    for (pa = PG_ROUND_UP(pa_start); pa + PG_SIZE <= pa_end; pa += PG_SIZE) {
+    for (uint64 pa = PG_ROUND_UP(pa_start); pa + PG_SIZE <= pa_end; pa += PG_SIZE) {
         pa_to_page(pa)->refcount = 1;
         kfree((void *)pa);
     }

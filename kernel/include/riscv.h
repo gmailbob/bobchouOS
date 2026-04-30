@@ -53,7 +53,7 @@ sfence_vma(void) {
 }
 
 /* ---- satp helpers (Sv39) ---- */
-#define SATP_SV39   (8UL << 60)
+#define SATP_SV39 (8UL << 60)
 #define MAKE_SATP(root_pt) (SATP_SV39 | ((uint64)(root_pt) >> 12))
 
 #endif /* !__ASSEMBLER__ */
