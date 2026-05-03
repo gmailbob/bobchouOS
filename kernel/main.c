@@ -7,6 +7,7 @@
 
 #include "drivers/uart.h"
 #include "kalloc.h"
+#include "kmalloc.h"
 #include "kprintf.h"
 #include "riscv.h"
 #include "vm.h"
@@ -46,6 +47,7 @@ kmain(void) {
     kalloc_init();
     vm_create_kernel_pt();
     vm_enable_paging();
+    kmalloc_init();
 
 #ifdef RUN_TESTS
     run_tests();

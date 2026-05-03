@@ -1,11 +1,12 @@
 /*
- * kalloc.c — Physical page allocator for bobchouOS.
+ * kalloc.c — Buddy allocator for bobchouOS.
  *
- * Manages free 4 KB pages using a singly-linked free list threaded
- * through the free pages themselves (struct run). A struct page array
- * provides per-page metadata (refcount) for every physical page.
+ * Replaces the Phase 3 flat free list with a buddy allocator that
+ * supports multi-page contiguous allocations. Pages are managed in
+ * power-of-two blocks (orders 0 through MAX_ORDER). The struct page
+ * array provides per-page metadata.
  *
- * See Lecture 3-2 for the full design discussion.
+ * See Lecture 4-2 for the full design discussion.
  */
 
 #include "types.h"
@@ -17,18 +18,21 @@
 
 extern char _kernel_end[];
 
+/* Free block link — threaded through the first 8 bytes of free blocks. */
 struct run {
     struct run *next;
 };
 
+/* Per-order free list. */
+struct free_area {
+    struct run *free_list;
+    uint64 nr_free;
+};
+
 static struct page *pages;
 static uint64 nr_pages;
-
-static struct run *free_list;
+static struct free_area free_areas[MAX_ORDER + 1];
 static uint64 free_start;
-static uint64 nr_free;
-
-static void free_range(uint64 pa_start, uint64 pa_end);
 
 /* Convert a physical address to its struct page entry. */
 struct page *
@@ -36,63 +40,105 @@ pa_to_page(uint64 pa) {
     return &pages[(pa - KERN_BASE) >> PG_SHIFT];
 }
 
-/* Initialize the page allocator: set up struct page array, build free list. */
-void
-kalloc_init(void) {
-    nr_pages = (PHYS_STOP - KERN_BASE) >> PG_SHIFT;
-
-    pages = (struct page *)PG_ROUND_UP((uint64)_kernel_end);
-    memset(pages, 0, nr_pages * sizeof(struct page));
-
-    free_start = PG_ROUND_UP((uint64)pages + nr_pages * sizeof(struct page));
-    free_range(free_start, PHYS_STOP);
-
-    kprintf("kalloc_init: %d free pages (%d KB), page array = %d KB\n", (int)nr_free,
-            (int)(nr_free * (PG_SIZE / 1024)), (int)(nr_pages * sizeof(struct page) / 1024));
+/* Convert a struct page entry back to its physical address. */
+static uint64
+page_to_pa(struct page *pg) {
+    return KERN_BASE + ((uint64)(pg - pages) << PG_SHIFT);
 }
 
 /*
- * Add every page in [pa_start, pa_end) to the free list.
- * Sets refcount to 1 before each kfree() (kfree expects refcount == 1).
+ * buddy_alloc — Allocate a contiguous block of 2^order pages.
+ *
+ * Search for a free block at the requested order. If none is
+ * available, find a larger block and split it repeatedly until
+ * a block of the right order is produced. The "buddy" (the other
+ * half of each split) goes onto the appropriate free list.
+ *
+ * Set page->order on the allocated block's first page.
+ * Set page->refcount = 1 on the first page.
+ * Zero the entire block.
+ * Returns NULL if no block can be found at any order.
+ *
+ * TODO: Implement buddy_alloc.
+ */
+static void *
+buddy_alloc(int order) {
+    /* TODO */
+    (void)order;
+    return NULL;
+}
+
+/*
+ * buddy_free — Free a block of 2^order pages starting at pa.
+ *
+ * Validate the address and alignment. Junk-fill the block with 0x01.
+ * Set refcount = 0 on the first page.
+ *
+ * Then attempt to merge with the buddy:
+ *   1. Compute buddy address: pa XOR (PG_SIZE << order).
+ *   2. Check if buddy is free (refcount == 0) and at the same order.
+ *   3. If so, remove buddy from its free list, merge into a block
+ *      of order+1 (the combined block starts at the lower address).
+ *   4. Repeat until buddy is in-use or order reaches MAX_ORDER.
+ *   5. Place the (possibly merged) block on the appropriate free list.
+ *
+ * TODO: Implement buddy_free.
  */
 static void
-free_range(uint64 pa_start, uint64 pa_end) {
-    for (uint64 pa = PG_ROUND_UP(pa_start); pa + PG_SIZE <= pa_end; pa += PG_SIZE) {
-        pa_to_page(pa)->refcount = 1;
-        kfree((void *)pa);
-    }
+buddy_free(void *pa, int order) {
+    /* TODO */
+    (void)pa;
+    (void)order;
 }
 
-/* Free a page: validate, check refcount, junk-fill, prepend to free list. */
+/*
+ * kalloc_init — Initialize the buddy allocator.
+ *
+ * 1. Compute nr_pages = (PHYS_STOP - KERN_BASE) / PG_SIZE.
+ * 2. Place the struct page array right after _kernel_end (page-aligned).
+ * 3. Zero the entire struct page array.
+ * 4. Compute free_start: first page after the struct page array.
+ * 5. Initialize all free_areas to empty.
+ * 6. Add all free pages [free_start, PHYS_STOP) to the buddy system.
+ *    For each contiguous range, find the largest power-of-two block
+ *    that fits at each aligned address, and add it via buddy_free.
+ *    (Hint: start from free_start, find the highest order whose
+ *    block size fits and whose alignment requirement is met, add it,
+ *    advance, repeat.)
+ * 7. Print diagnostic: "kalloc_init: buddy allocator, orders 0-10,
+ *    N free pages (N MB)"
+ *
+ * TODO: Implement kalloc_init.
+ */
 void
-kfree(void *pa) {
-    if ((uint64)pa % PG_SIZE || (uint64)pa < free_start || (uint64)pa >= PHYS_STOP)
-        panic("kfree: invalid physical address=%p", pa);
-
-    struct page *pg = pa_to_page((uint64)pa);
-    if (pg->refcount != 1)
-        panic("kfree: pa=%p refcount=%d", pa, pg->refcount);
-    pg->refcount = 0;
-
-    memset(pa, 1, PG_SIZE);
-
-    struct run *r = (struct run *)pa;
-    r->next = free_list;
-    free_list = r;
-    nr_free++;
+kalloc_init(void) {
+    /* TODO */
 }
 
-/* Allocate one zeroed 4 KB page. Returns NULL if out of memory. */
+/* Allocate one zeroed 4 KB page (buddy order 0). */
 void *
 kalloc(void) {
-    if (!free_list)
-        return NULL;
+    return buddy_alloc(0);
+}
 
-    struct run *r = free_list;
-    free_list = r->next;
+/* Free a single page. */
+void
+kfree(void *pa) {
+    buddy_free(pa, 0);
+}
 
-    pa_to_page((uint64)r)->refcount = 1;
-    memset(r, 0, PG_SIZE);
-    nr_free--;
-    return r;
+/* Allocate 2^order contiguous pages. */
+void *
+kalloc_pages(int order) {
+    if (order < 0 || order > MAX_ORDER)
+        panic("kalloc_pages: invalid order %d", order);
+    return buddy_alloc(order);
+}
+
+/* Free a multi-page block of 2^order pages. */
+void
+kfree_pages(void *pa, int order) {
+    if (order < 0 || order > MAX_ORDER)
+        panic("kfree_pages: invalid order %d", order);
+    buddy_free(pa, order);
 }

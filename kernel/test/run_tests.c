@@ -16,6 +16,7 @@ void test_string(void);
 void test_trap(void);
 void test_kalloc(void);
 void test_vm(void);
+void test_kmalloc(void);
 
 void
 run_tests(void) {
@@ -26,6 +27,7 @@ run_tests(void) {
     test_trap();
     test_kalloc();
     test_vm();
+    test_kmalloc();
 
     kprintf("\n=== results: %d passed, %d failed ===\n\n", test_pass, test_fail);
 }
