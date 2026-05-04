@@ -9,6 +9,7 @@
 #include "kalloc.h"
 #include "kmalloc.h"
 #include "kprintf.h"
+#include "mem_layout.h"
 #include "riscv.h"
 #include "vm.h"
 
@@ -57,11 +58,13 @@ kmain(void) {
 
 #ifdef RUN_TESTS
     run_tests();
-#endif
-
+    kprintf("tests complete, shutting down.\n");
+    *(volatile uint32 *)QEMU_SHUTDOWN = QEMU_SHUTDOWN_PASS;
+#else
     kprintf("\ntimer interrupts enabled, waiting for ticks...\n");
 
     /* Spin forever — timer interrupts will fire periodically. */
     for (;;)
         asm volatile("wfi");
+#endif
 }

@@ -108,7 +108,7 @@ sfence_vma(void) {
 
 /* ---- Page size and alignment (Sv39) ---- */
 
-#define PG_SIZE              (1 << 12)       /* 4096 bytes per page */
+#define PG_SIZE              (_UL(1) << 12)  /* 4096 bytes per page */
 #define PG_SHIFT             12              /* log2(PG_SIZE) */
 
 #define PG_ROUND_UP(a)       (((a) + PG_SIZE - 1) & ~(PG_SIZE - 1))
