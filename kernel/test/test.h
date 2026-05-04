@@ -21,12 +21,13 @@ extern int test_pass;
 extern int test_fail;
 
 /*
- * Assert a condition. On failure, print file:line and the message.
+ * Assert a condition. On failure, print additional file:line and the message for debugging.
  * Tests continue after failure (no abort) so you see all results.
  */
 #define TEST_ASSERT(cond, msg)                                                                     \
     do {                                                                                           \
         if (cond) {                                                                                \
+            kprintf("  PASS: %s\n", msg);                                                          \
             test_pass++;                                                                           \
         } else {                                                                                   \
             kprintf("  FAIL: %s (%s:%d)\n", msg, __FILE__, __LINE__);                              \

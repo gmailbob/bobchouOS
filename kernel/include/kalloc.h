@@ -43,8 +43,8 @@ struct page {
 void kalloc_init(void);
 void *kalloc(void);
 void kfree(void *pa);
-void *kalloc_pages(int order);
-void kfree_pages(void *pa, int order);
+void *kalloc_pages(uint32 order);
+void kfree_pages(void *pa, uint32 order);
 
 struct page *pa_to_page(uint64 pa);
 

@@ -44,6 +44,12 @@ kmain(void) {
     kprintf("kernel: %p .. %p (%d bytes)\n", _kernel_start, _kernel_end,
             (int)(_kernel_end - _kernel_start));
 
+    /* Memory subsystem init order matters:
+     * 1. kalloc_init    — buddy allocator; everything else calls kalloc()
+     * 2. vm_create_kernel_pt — builds page table (needs kalloc for table pages)
+     * 3. vm_enable_paging   — activates Sv39 (needs the page table built)
+     * 4. kmalloc_init       — slab allocator (needs kalloc for slab pages;
+     *    after paging so it works if we later use non-identity mapping) */
     kalloc_init();
     vm_create_kernel_pt();
     vm_enable_paging();

@@ -77,8 +77,7 @@ test_kalloc(void) {
     /* Order 1: allocate 2 contiguous pages (8 KB). */
     void *m1 = kalloc_pages(1);
     TEST_ASSERT(m1 != NULL, "kalloc_pages(1) returns non-NULL");
-    TEST_ASSERT((uint64)m1 % (PG_SIZE << 1) == 0,
-                "order-1 block is 8KB-aligned");
+    TEST_ASSERT((uint64)m1 % (PG_SIZE << 1) == 0, "order-1 block is 8KB-aligned");
     TEST_ASSERT(pa_to_page((uint64)m1)->order == 1, "order == 1");
     TEST_ASSERT(pa_to_page((uint64)m1)->refcount == 1, "refcount == 1");
 
@@ -98,8 +97,7 @@ test_kalloc(void) {
     /* Order 2: allocate 4 contiguous pages (16 KB). */
     void *m2 = kalloc_pages(2);
     TEST_ASSERT(m2 != NULL, "kalloc_pages(2) returns non-NULL");
-    TEST_ASSERT((uint64)m2 % (PG_SIZE << 2) == 0,
-                "order-2 block is 16KB-aligned");
+    TEST_ASSERT((uint64)m2 % (PG_SIZE << 2) == 0, "order-2 block is 16KB-aligned");
     TEST_ASSERT(pa_to_page((uint64)m2)->order == 2, "order == 2");
     kfree_pages(m2, 2);
 

@@ -19,8 +19,8 @@
 #include "kmalloc.h"
 
 #define NR_SIZE_CLASSES 7
-#define MIN_ALLOC_SIZE  32
-#define MAX_SLAB_SIZE   2048
+#define MIN_ALLOC_SIZE 32
+#define MAX_SLAB_SIZE 2048
 
 /* Free slot link — overlaid on free slot memory (first 8 bytes). */
 struct free_slot {

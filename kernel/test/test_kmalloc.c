@@ -86,8 +86,7 @@ test_kmalloc(void) {
     TEST_ASSERT((uint64)big1 % PG_SIZE == 0, "big-alloc is page-aligned");
 
     struct page *big1_pg = pa_to_page((uint64)big1);
-    TEST_ASSERT(big1_pg->slab.class_idx == BIG_ALLOC,
-                "big-alloc page marked BIG_ALLOC");
+    TEST_ASSERT(big1_pg->slab.class_idx == BIG_ALLOC, "big-alloc page marked BIG_ALLOC");
     kmfree(big1);
 
     /* Multi-page big alloc. */
@@ -96,8 +95,7 @@ test_kmalloc(void) {
     TEST_ASSERT((uint64)big2 % PG_SIZE == 0, "8K big-alloc page-aligned");
 
     struct page *big2_pg = pa_to_page((uint64)big2);
-    TEST_ASSERT(big2_pg->slab.class_idx == BIG_ALLOC,
-                "8K big-alloc marked BIG_ALLOC");
+    TEST_ASSERT(big2_pg->slab.class_idx == BIG_ALLOC, "8K big-alloc marked BIG_ALLOC");
     TEST_ASSERT(big2_pg->order >= 1, "8K big-alloc order >= 1");
     kmfree(big2);
 
@@ -130,6 +128,5 @@ test_kmalloc(void) {
     uint8 keep_class = keep_pg->slab.class_idx;
     kmfree(keep);
     /* The slab should still be alive (nr_alloc == 0 but not freed). */
-    TEST_ASSERT(keep_pg->slab.class_idx == keep_class,
-                "sole empty slab kept alive");
+    TEST_ASSERT(keep_pg->slab.class_idx == keep_class, "sole empty slab kept alive");
 }
