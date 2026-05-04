@@ -1168,8 +1168,8 @@ struct size_class {
 };
 
 /* Free slot link — overlaid on free slot memory. */
-struct free_slot {
-    struct free_slot *next;
+struct slot {
+    struct slot *next;
 };
 ```
 
@@ -1179,7 +1179,7 @@ struct free_slot {
 #define MAX_ORDER 10           // max block = 2^10 = 1024 pages = 4 MB
 
 struct free_area {
-    struct run *free_list;    // free blocks of this order
+    struct block *free_list;  // free blocks of this order
     uint64 nr_free;           // count of free blocks
 };
 
@@ -1283,7 +1283,7 @@ void kmfree(void *ptr);
 ```
 
 Minimal public interface. The slab internals (`struct size_class`,
-`struct free_slot`) are private to `kmalloc.c`.
+`struct slot`) are private to `kmalloc.c`.
 
 ### `kalloc.c` — buddy allocator internals
 

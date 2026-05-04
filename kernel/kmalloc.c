@@ -22,9 +22,9 @@
 #define MIN_ALLOC_SIZE 32
 #define MAX_SLAB_SIZE 2048
 
-/* Free slot link — overlaid on free slot memory (first 8 bytes). */
-struct free_slot {
-    struct free_slot *next;
+/* Link for the slab free list — overlaid on the first 8 bytes of a free slot. */
+struct slot {
+    struct slot *next;
 };
 
 /* One per size class. */
@@ -57,7 +57,7 @@ size_to_class(uint64 size) {
  *    - nr_alloc = 0
  *    - next_slab = NULL
  * 3. Divide the entire page into slots of size_classes[idx].slot_size.
- *    Build a free list by threading struct free_slot pointers through
+ *    Build a free list by threading struct slot pointers through
  *    each slot. The first slot starts at the beginning of the page
  *    (no embedded header — metadata is in struct page).
  * 4. Set page->slab.free_list to the head of the slot free list.

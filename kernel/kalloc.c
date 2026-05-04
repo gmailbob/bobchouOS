@@ -18,14 +18,14 @@
 
 extern char _kernel_end[];
 
-/* Free block link — threaded through the first 8 bytes of free blocks. */
-struct run {
-    struct run *next;
+/* Link for the buddy free list — overlaid on the first 8 bytes of a free block. */
+struct block {
+    struct block *next;
 };
 
 /* Per-order free list. */
 struct free_area {
-    struct run *free_list;
+    struct block *free_list;
     uint64 nr_free;
 };
 
@@ -67,14 +67,14 @@ buddy_alloc(uint32 order) {
 
     /* Search upward for the smallest available block >= requested order. */
     uint32 found_order = order;
-    struct run *r;
-    while (!(r = free_areas[found_order].free_list)) {
+    struct block *b;
+    while (!(b = free_areas[found_order].free_list)) {
         if (++found_order > MAX_ORDER)
             return NULL;
     }
 
     /* Remove the block from its free list. */
-    free_areas[found_order].free_list = r->next;
+    free_areas[found_order].free_list = b->next;
     free_areas[found_order].nr_free--;
 
     /* Split down: for each level between the found order and the
@@ -87,18 +87,17 @@ buddy_alloc(uint32 order) {
      * when refcount>0 (allocated), but setting it here avoids stale
      * values in debug dumps. */
     for (uint32 i = order; i < found_order; i++) {
-        struct run *buddy = (struct run *)((uint64)r ^ (PG_SIZE << i));
+        struct block *buddy = (struct block *)((uint64)b ^ (PG_SIZE << i));
         pa_to_page((uint64)buddy)->order = i;
         buddy->next = free_areas[i].free_list;
         free_areas[i].free_list = buddy;
         free_areas[i].nr_free++;
     }
 
-    memset(r, 0, PG_SIZE << order);
-    struct page *pg = pa_to_page((uint64)r);
-    pg->order = order;
-    pg->refcount = 1;
-    return r;
+    memset(b, 0, PG_SIZE << order);
+    pa_to_page((uint64)b)->order = order;
+    pa_to_page((uint64)b)->refcount = 1;
+    return b;
 }
 
 /*
@@ -135,22 +134,22 @@ buddy_free(void *pa, uint32 order) {
             break;
 
         /* Try to find buddy on this order's free list. */
-        struct run **pr = &free_areas[order].free_list;
-        while (*pr && *pr != (struct run *)buddy)
-            pr = &(*pr)->next;
-        if (*pr == NULL)
+        struct block **pb = &free_areas[order].free_list;
+        while (*pb && *pb != (struct block *)buddy)
+            pb = &(*pb)->next;
+        if (*pb == NULL)
             break;
 
         /* Remove buddy and merge into the lower-addressed block. */
-        *pr = (*pr)->next;
+        *pb = (*pb)->next;
         free_areas[order].nr_free--;
         addr &= ~(PG_SIZE << order);
         order++;
     }
 
-    struct run *r = (void *)addr;
-    r->next = free_areas[order].free_list;
-    free_areas[order].free_list = r;
+    struct block *b = (void *)addr;
+    b->next = free_areas[order].free_list;
+    free_areas[order].free_list = b;
     free_areas[order].nr_free++;
 }
 
