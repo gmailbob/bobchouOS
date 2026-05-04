@@ -512,8 +512,9 @@ slab, user page), the different field sets overlay each other:
 struct page {
     uint16 refcount;          // always valid
     uint8 order;              // buddy allocator order (Part 7)
+    uint8 flags;              // PG_SLAB, PG_BIG, etc.
     union {
-        struct {              // when page is used as a slab
+        struct {              // when flags & PG_SLAB
             uint8 class_idx;
             uint16 nr_alloc;
             void *free_list;
@@ -524,8 +525,11 @@ struct page {
 };
 ```
 
-(The `order` field is for the buddy allocator, introduced in Part 7.
-The full layout is discussed in Part 9.)
+The `flags` field tells you what kind of page this is — `PG_SLAB`
+for slab pages, `PG_BIG` for big kmalloc allocations, etc. The
+union variant to read depends on which flag is set. (The `order`
+field is for the buddy allocator, introduced in Part 7. The full
+layout is discussed in Part 9.)
 
 Given a pointer into a slab, we find its metadata via `pa_to_page()`
 — the same function we already have. No data is stored inside the
@@ -781,22 +785,20 @@ request is rounded up to the nearest order, and `kalloc_pages(order)`
 does the rest.
 
 Since metadata lives in `struct page`, distinguishing big
-allocations from slab allocations is easy — just set `class_idx`
-to a sentinel value and record the buddy order:
+allocations from slab allocations is easy — just set the `PG_BIG`
+flag:
 
 1. `kmalloc(N)` where N > 2048: compute the order needed
    (e.g., N=8192 → 2 pages → order 1)
 2. Call `kalloc_pages(order)` to get contiguous pages
-3. Set `pa_to_page(ptr)->slab.class_idx = BIG_ALLOC` on the first
-   page — the buddy order is already stored in `page->order` by
-   the buddy allocator
+3. Set `pa_to_page(ptr)->flags = PG_BIG` — the buddy order is
+   already stored in `page->order` by the buddy allocator
 4. Return the pointer — the **entire** block is usable (no embedded
    header to skip past)
 
 Freeing:
 
-1. `kmfree(ptr)` → `pa_to_page(ptr)`, read `class_idx`, see
-   `BIG_ALLOC`
+1. `kmfree(ptr)` → `pa_to_page(ptr)`, check `flags & PG_BIG`
 2. Read `page->order` to know the block size
 3. Call `kfree_pages(ptr, page->order)`
 
@@ -816,8 +818,8 @@ to use:
 interface for all kernel allocations.
 
 > **When to call kalloc_pages directly?** When you need explicit
-> control over the buddy order or want to avoid the `BIG_ALLOC`
-> metadata overhead. In practice, most kernel code should use
+> control over the buddy order or want to avoid the `PG_BIG` flag
+> overhead. In practice, most kernel code should use
 > `kmalloc`/`kmfree` for the uniform interface. Direct
 > `kalloc_pages` is for low-level code that knows exactly what it
 > needs — page tables, DMA setup, etc.
@@ -1142,9 +1144,10 @@ by kernel config options.
 struct page {
     uint16 refcount;
     uint8 order;              // buddy order (0 = single page)
+    uint8 flags;              // PG_SLAB, PG_BIG, etc.
     union {
-        struct {              // when page is used as a slab
-            uint8 class_idx;  // index into size_classes[] or BIG_ALLOC
+        struct {              // when flags & PG_SLAB
+            uint8 class_idx;  // index into size_classes[] (0-6)
             uint16 nr_alloc;  // currently allocated slots
             void *free_list;  // first free slot
             struct page *next_slab;  // next slab in class list
@@ -1154,9 +1157,10 @@ struct page {
 };
 ```
 
-The `order` field sits outside the union because it's needed for
-`kfree` regardless of how the page is used — buddy merging needs to
-know the block size.
+The `order` and `flags` fields sit outside the union because they're
+needed regardless of page role — buddy merging needs `order`, and
+`kmfree` checks `flags` to distinguish slab pages from big
+allocations.
 
 **Slab allocator structures (internal to `kmalloc.c`):**
 
@@ -1242,9 +1246,13 @@ Makefile                  <-- UPDATE: add kmalloc.o and test_kmalloc.o
 ```c
 #define MAX_ORDER 10
 
+#define PG_SLAB  (1 << 0)     // page is a slab
+#define PG_BIG   (1 << 1)     // page is a big kmalloc allocation
+
 struct page {
     uint16 refcount;
-    uint8 order;              // buddy order (0 = single page)
+    uint8 order;
+    uint8 flags;              // PG_SLAB, PG_BIG, etc.
     union {
         struct {
             uint8 class_idx;
@@ -1256,10 +1264,10 @@ struct page {
 };
 
 void kalloc_init(void);
-void *kalloc(void);           // single page (order 0)
-void kfree(void *pa);         // free single page
-void *kalloc_pages(int order); // 2^order contiguous pages
-void kfree_pages(void *pa, int order);
+void *kalloc(void);                  // single page (order 0)
+void kfree(void *pa);               // free single page
+void *kalloc_pages(uint32 order);    // 2^order contiguous pages
+void kfree_pages(void *pa, uint32 order);
 struct page *pa_to_page(uint64 pa);
 ```
 
@@ -1328,7 +1336,7 @@ list through them. Link into the class's slab list.
 1. If `size == 0`, return NULL.
 2. If `size > MAX_SLAB_SIZE`, big-alloc path: round up to
    power-of-two pages, `kalloc_pages(order)`, set
-   `page->slab.class_idx = BIG_ALLOC`, return the pointer.
+   `page->flags = PG_BIG`, return the pointer.
 3. Find the size class via loop.
 4. If the first slab has free slots, pop one.
 5. Otherwise, `slab_create()`, prepend, pop.
@@ -1336,7 +1344,7 @@ list through them. Link into the class's slab list.
 **`kmfree(ptr)`**:
 
 1. `pa_to_page(ptr)` → `struct page`.
-2. If `class_idx == BIG_ALLOC`, call
+2. If `page->flags & PG_BIG`, call
    `kfree_pages(ptr, page->order)`.
 3. Otherwise, push slot onto `page->slab.free_list`, decrement
    `nr_alloc`.
@@ -1528,8 +1536,9 @@ data structures.
 struct page {
     uint16 refcount;
     uint8 order;              // buddy order
+    uint8 flags;              // PG_SLAB, PG_BIG, etc.
     union {
-        struct {              // slab metadata
+        struct {              // when flags & PG_SLAB
             uint8 class_idx;
             uint16 nr_alloc;
             void *free_list;

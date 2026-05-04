@@ -52,10 +52,11 @@ size_to_class(uint64 size) {
  * slab_create — Allocate and initialize a new slab page for a size class.
  *
  * 1. Call kalloc() to get a fresh page.
- * 2. Set up struct page slab fields:
- *    - class_idx = the class index
- *    - nr_alloc = 0
- *    - next_slab = NULL
+ * 2. Set up struct page fields:
+ *    - flags = PG_SLAB
+ *    - slab.class_idx = the class index
+ *    - slab.nr_alloc = 0
+ *    - slab.next_slab = NULL
  * 3. Divide the entire page into slots of size_classes[idx].slot_size.
  *    Build a free list by threading struct slot pointers through
  *    each slot. The first slot starts at the beginning of the page
@@ -95,7 +96,7 @@ slab_destroy(struct page *slab, int class_idx) {
  * - If size > MAX_SLAB_SIZE (big-alloc path):
  *     1. Compute the buddy order needed to hold size bytes.
  *     2. Call kalloc_pages(order).
- *     3. Set page->slab.class_idx = BIG_ALLOC on the first page.
+ *     3. Set page->flags = PG_BIG on the first page.
  *     4. Return the pointer (entire block is usable).
  * - Otherwise (slab path):
  *     1. Find the size class via size_to_class().
@@ -119,14 +120,15 @@ kmalloc(uint64 size) {
  * kmfree — Free memory previously returned by kmalloc.
  *
  * 1. Look up the struct page via pa_to_page((uint64)ptr).
- * 2. If page->slab.class_idx == BIG_ALLOC:
- *      Call kfree_pages(ptr, page->order).
+ * 2. If page->flags & PG_BIG:
+ *      Clear page->flags, then call kfree_pages(ptr, page->order).
  * 3. Otherwise (slab path):
  *      a. Junk-fill the slot with 0xAB (size = size_classes[class_idx].slot_size).
  *      b. Push the slot onto page->slab.free_list.
  *      c. Decrement page->slab.nr_alloc.
  *      d. If nr_alloc == 0 and the class has another empty slab,
  *         call slab_destroy() to return this page to the buddy allocator.
+ *         Clear page->flags before calling kfree().
  *         Otherwise keep it (one empty slab per class is fine).
  *
  * TODO: Implement kmfree.

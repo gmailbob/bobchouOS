@@ -86,7 +86,7 @@ test_kmalloc(void) {
     TEST_ASSERT((uint64)big1 % PG_SIZE == 0, "big-alloc is page-aligned");
 
     struct page *big1_pg = pa_to_page((uint64)big1);
-    TEST_ASSERT(big1_pg->slab.class_idx == BIG_ALLOC, "big-alloc page marked BIG_ALLOC");
+    TEST_ASSERT(big1_pg->flags & PG_BIG, "big-alloc page has PG_BIG flag");
     kmfree(big1);
 
     /* Multi-page big alloc. */
@@ -95,7 +95,7 @@ test_kmalloc(void) {
     TEST_ASSERT((uint64)big2 % PG_SIZE == 0, "8K big-alloc page-aligned");
 
     struct page *big2_pg = pa_to_page((uint64)big2);
-    TEST_ASSERT(big2_pg->slab.class_idx == BIG_ALLOC, "8K big-alloc marked BIG_ALLOC");
+    TEST_ASSERT(big2_pg->flags & PG_BIG, "8K big-alloc has PG_BIG flag");
     TEST_ASSERT(big2_pg->order >= 1, "8K big-alloc order >= 1");
     kmfree(big2);
 

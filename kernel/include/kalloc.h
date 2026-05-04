@@ -16,7 +16,9 @@
 
 #define MAX_ORDER 10 /* max block = 2^10 = 1024 pages = 4 MB */
 
-#define BIG_ALLOC 0xFF /* sentinel: page is a kmalloc big allocation */
+/* Page flags — identify how a page is being used. */
+#define PG_SLAB (1 << 0) /* page is a slab (sub-page allocator) */
+#define PG_BIG (1 << 1)  /* page is a big kmalloc allocation */
 
 /*
  * Per-page metadata. One entry per physical page in the system.
@@ -24,15 +26,17 @@
  * - refcount: always valid regardless of page state.
  * - order: buddy block order (0 = single page). Lives outside the
  *   union because buddy merging needs it regardless of page role.
+ * - flags: identifies page role (PG_SLAB, PG_BIG, etc.).
  * - union: role-specific fields. A page is only one thing at a time
  *   (free, slab, page table, user page), so the fields overlay.
  */
 struct page {
     uint16 refcount;
     uint8 order;
+    uint8 flags;
     union {
         struct {
-            uint8 class_idx;        /* index into size_classes[] or BIG_ALLOC */
+            uint8 class_idx;        /* index into size_classes[] (0-6) */
             uint16 nr_alloc;        /* currently allocated slots */
             void *free_list;        /* first free slot in this slab */
             struct page *next_slab; /* next slab in class's list */
