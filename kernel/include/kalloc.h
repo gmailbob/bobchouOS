@@ -23,9 +23,14 @@
 /*
  * Per-page metadata. One entry per physical page in the system.
  *
- * - refcount: always valid regardless of page state.
- * - order: buddy block order (0 = single page). Lives outside the
- *   union because buddy merging needs it regardless of page role.
+ * Ownership:
+ *   refcount, order — managed by the buddy allocator (kalloc.c).
+ *                     Consumers must not modify these.
+ *   flags, union    — managed by the consumer (e.g., kmalloc.c).
+ *                     Set flags on alloc, clear on free.
+ *
+ * - refcount: reference count. 0 = free, >=1 = allocated.
+ * - order: buddy block order (0 = single page). Needed for merging.
  * - flags: identifies page role (PG_SLAB, PG_BIG, etc.).
  * - union: role-specific fields. A page is only one thing at a time
  *   (free, slab, page table, user page), so the fields overlay.
@@ -51,5 +56,6 @@ void *kalloc_pages(uint32 order);
 void kfree_pages(void *pa, uint32 order);
 
 struct page *pa_to_page(uint64 pa);
+uint64 page_to_pa(struct page *pg);
 
 #endif /* KALLOC_H */

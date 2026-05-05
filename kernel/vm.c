@@ -115,7 +115,7 @@ kvm_map(uint64 va, uint64 pa, uint64 size, int perm) {
  */
 void
 vm_create_kernel_pt(void) {
-    if (!(kernel_root_pt = (pte_t *)kalloc()))
+    if (!(kernel_root_pt = kalloc()))
         panic("vm_init: failed to kalloc");
     kvm_map(QEMU_SHUTDOWN, QEMU_SHUTDOWN, PG_SIZE, PTE_R | PTE_W);
     kvm_map(PLIC_BASE, PLIC_BASE, PLIC_SIZE, PTE_R | PTE_W);

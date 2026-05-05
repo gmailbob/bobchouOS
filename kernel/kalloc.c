@@ -40,6 +40,12 @@ pa_to_page(uint64 pa) {
     return &pages[(pa - KERN_BASE) >> PG_SHIFT];
 }
 
+/* Convert a struct page entry back to its physical address. */
+uint64
+page_to_pa(struct page *pg) {
+    return KERN_BASE + ((uint64)(pg - pages) << PG_SHIFT);
+}
+
 /* Print per-order free list stats. Useful for debugging after init. */
 static void
 buddy_dump(void) {

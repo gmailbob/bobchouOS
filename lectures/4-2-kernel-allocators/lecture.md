@@ -986,6 +986,23 @@ downside. Linux mitigates this by layering the slab allocator on
 top — the slab handles sub-page objects efficiently, and the buddy
 handles the page-level backing.
 
+### Caller contract and tail pages
+
+For a multi-page block (order > 0), only the **first page** has
+valid `struct page` metadata (`order`, `flags`, `refcount`). The
+remaining pages in the block ("tail pages") have stale values —
+the buddy allocator only reads and writes the first page's entry.
+
+This means `kfree_pages` must receive the exact base address that
+`kalloc_pages` returned. Passing a pointer to the second page of
+a block gives wrong metadata — our panic checks catch this
+(`refcount != 1` or `order` mismatch), but the root cause would be
+a caller bug. Same rule as user-space `free`: you can only free the
+exact pointer the allocator gave you. In the kernel we enforce this
+by convention, not hardware — we have full control over our code.
+Linux calls these multi-page groups "compound pages" and follows
+the same rule: metadata lives on the "head page" only.
+
 ### Tracking block order
 
 When `buddy_free(pa)` is called, we need to know the order (size)
