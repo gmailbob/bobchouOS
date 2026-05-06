@@ -42,7 +42,9 @@ TEST_OBJS = kernel/test/run_tests.o \
             kernel/test/test_trap.o \
             kernel/test/test_kalloc.o \
             kernel/test/test_vm.o \
-            kernel/test/test_kmalloc.o
+            kernel/test/test_kmalloc.o \
+            kernel/test/test_list.o \
+            kernel/test/test_hashtable.o
 
 QEMU    = qemu-system-riscv64
 QFLAGS  = -machine virt -nographic -bios none -kernel $(TARGET)
