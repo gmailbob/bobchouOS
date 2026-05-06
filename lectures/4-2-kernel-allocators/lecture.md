@@ -1031,6 +1031,31 @@ Our implementation is simple — the minimum viable buddy:
 At boot, `kalloc_init` groups all free memory into the largest
 possible buddy blocks instead of adding pages one by one.
 
+### Why there's a hard limit
+
+`MAX_ORDER` means the largest single contiguous allocation is 4 MB.
+This is a hard limit — even with terabytes of RAM, the buddy
+allocator won't hand out a 16 MB contiguous block. Every OS has
+this constraint, because as memory fragments over time, large
+contiguous regions become scarce. Keeping the max order modest means
+the allocator doesn't promise what it can't reliably deliver.
+
+In practice, almost nothing needs >4 MB contiguous physical memory:
+
+- **Huge pages** (2 MB) — the biggest real consumer. Databases and
+  VMs use these for TLB efficiency.
+- **DMA buffers** — typically 4 KB to 64 KB. Larger transfers use
+  scatter-gather lists (the device hops between pages) or an IOMMU.
+- **Per-process kernel stacks** — Linux allocates 2-4 pages (8-16 KB)
+  per process from the buddy allocator. (Our kernel uses a single
+  static stack from the linker script for now.)
+
+For anything truly large, kernels use `vmalloc` — allocate scattered
+pages and map them to contiguous *virtual* addresses through the
+page table. Same trick as user-space: virtual contiguity without
+physical contiguity. Slower (requires page table manipulation) and
+unusable for DMA, but no size limit.
+
 With the buddy allocator in place, the full allocator stack from
 Part 1 is complete: slab on top of buddy on top of physical memory
 — the same architecture as Linux, just much simpler.

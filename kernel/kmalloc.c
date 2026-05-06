@@ -94,26 +94,30 @@ slab_create(int class_idx) {
 /*
  * slab_destroy — Return an empty slab page to the buddy allocator.
  *
- * Unlink the slab from its class's slab list, then kfree() the page.
- * The class's slab list is singly-linked (via page->slab.next_slab),
- * so unlinking requires scanning to find the previous entry.
+ * Keep at least one slab per class (so the fast path always has a
+ * slab to work with). If this is the only slab, do nothing.
+ * Otherwise, unlink from the class's singly-linked list (requires
+ * scanning for the previous entry), clear flags, and kfree the page.
  */
 static void
 slab_destroy(struct page *slab, int class_idx) {
     if (slab == NULL || class_idx < 0 || class_idx >= NR_SIZE_CLASSES)
         panic("slab_destroy: slab=%p class_idx=%d", slab, class_idx);
-    struct page **ps = &size_classes[class_idx].slabs;
-    if (*ps == NULL || (*ps)->slab.next_slab == NULL) // keep at least one active slab
-        return;
 
+    /* Find the slab in the class's list. */
+    struct page **ps = &size_classes[class_idx].slabs;
     while (*ps && *ps != slab)
         ps = &(*ps)->slab.next_slab;
+    if (*ps == NULL)
+        panic("slab_destroy: slab=%p not found in class %d", slab, class_idx);
 
-    if (*ps) {
-        (*ps)->slab.next_slab = slab->slab.next_slab;
-        kfree((void *)page_to_pa(slab));
-    } else
-        panic("slab_destroy: slab=%p not found", slab);
+    /* Keep at least one slab per class so the fast path always has one. */
+    if (!size_classes[class_idx].slabs->slab.next_slab)
+        return;
+
+    *ps = slab->slab.next_slab;
+    slab->flags = 0;
+    kfree((void *)page_to_pa(slab));
 }
 
 /*
@@ -144,26 +148,34 @@ kmalloc(uint64 size) {
         while (order <= MAX_ORDER && (PG_SIZE << order) < size)
             order++;
         if (order > MAX_ORDER)
-            panic("kmalloc: size=%d exceeds limit", size);
+            panic("kmalloc: size=%d exceeds limit", (int)size);
 
         void *pa = kalloc_pages(order);
+        if (!pa)
+            return NULL;
         pa_to_page((uint64)pa)->flags = PG_BIG;
         return pa;
     }
 
     int idx = size_to_class(size);
-    struct page **ps = &size_classes[idx].slabs;
-    while (*ps && (*ps)->slab.free_list == NULL)
-        ps = &(*ps)->slab.next_slab;
 
-    if (*ps == NULL) {
-        if ((*ps = slab_create(idx)) == NULL)
+    /* Find a slab with a free slot. */
+    struct page *slab = size_classes[idx].slabs;
+    while (slab && slab->slab.free_list == NULL)
+        slab = slab->slab.next_slab;
+
+    /* No slab with free slots — create a new one, prepend to head. */
+    if (slab == NULL) {
+        slab = slab_create(idx);
+        if (!slab)
             return NULL;
+        slab->slab.next_slab = size_classes[idx].slabs;
+        size_classes[idx].slabs = slab;
     }
 
-    (*ps)->slab.nr_alloc++;
-    struct slot *s = (*ps)->slab.free_list;
-    (*ps)->slab.free_list = s->next;
+    slab->slab.nr_alloc++;
+    struct slot *s = slab->slab.free_list;
+    slab->slab.free_list = s->next;
     return s;
 }
 
@@ -172,15 +184,13 @@ kmalloc(uint64 size) {
  *
  * 1. Look up the struct page via pa_to_page((uint64)ptr).
  * 2. If page->flags & PG_BIG:
- *      Clear page->flags, then call kfree_pages(ptr, page->order).
+ *      Clear flags, then call kfree_pages(ptr, page->order).
  * 3. Otherwise (slab path):
- *      a. Junk-fill the slot with 0xAB (size = size_classes[class_idx].slot_size).
+ *      a. Junk-fill the slot with 0xAB.
  *      b. Push the slot onto page->slab.free_list.
  *      c. Decrement page->slab.nr_alloc.
- *      d. If nr_alloc == 0 and the class has another empty slab,
- *         call slab_destroy() to return this page to the buddy allocator.
- *         Clear page->flags before calling kfree().
- *         Otherwise keep it (one empty slab per class is fine).
+ *      d. If nr_alloc == 0, call slab_destroy() which decides
+ *         whether to actually free the page or keep it.
  */
 void
 kmfree(void *ptr) {
@@ -189,6 +199,8 @@ kmfree(void *ptr) {
         pg->flags = 0;
         return kfree_pages(ptr, pg->order);
     }
+    if (!(pg->flags & PG_SLAB))
+        panic("kmfree: ptr=%p not from kmalloc (flags=0x%x)", ptr, pg->flags);
 
     uint8 idx = pg->slab.class_idx;
     memset(ptr, 0xAB, size_classes[idx].slot_size);
@@ -217,5 +229,5 @@ kmalloc_init(void) {
         size_classes[i].slot_size = 32 << i;
         size_classes[i].slabs = slab_create(i);
     }
-    kprintf("kmalloc_init: 7 size classes (32..2048)");
+    kprintf("kmalloc_init: 7 size classes (32..2048), big alloc > 2048\n");
 }

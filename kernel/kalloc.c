@@ -101,8 +101,9 @@ buddy_alloc(uint32 order) {
     }
 
     memset(b, 0, PG_SIZE << order);
-    pa_to_page((uint64)b)->order = order;
-    pa_to_page((uint64)b)->refcount = 1;
+    struct page *pg = pa_to_page((uint64)b);
+    pg->order = order;
+    pg->refcount = 1;
     return b;
 }
 
