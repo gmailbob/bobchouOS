@@ -9,7 +9,7 @@
 struct record {
     int key;
     int value;
-    struct hlist_node hash_link;
+    struct list_head hash_link;
 };
 
 #define TEST_HT_BITS 4 /* 16 buckets */
@@ -21,44 +21,39 @@ test_hashtable(void) {
     /* --- Initialization --- */
 
     DEFINE_HASHTABLE(ht, TEST_HT_BITS);
-    int all_null = 1;
+    hash_init(ht, TEST_HT_BITS);
+    int all_empty = 1;
     for (int i = 0; i < HT_SIZE(TEST_HT_BITS); i++) {
-        if (ht[i].first != NULL)
-            all_null = 0;
+        if (!list_empty(&ht[i]))
+            all_empty = 0;
     }
-    TEST_ASSERT(all_null, "DEFINE_HASHTABLE: all buckets NULL");
-
-    /* --- hlist_unhashed --- */
-
-    struct record r1 = {.key = 10, .value = 100};
-    r1.hash_link.next = NULL;
-    r1.hash_link.pprev = NULL;
-    TEST_ASSERT(hlist_unhashed(&r1.hash_link), "node starts unhashed");
+    TEST_ASSERT(all_empty, "hash_init: all buckets empty");
 
     /* --- hash_add / basic insertion --- */
 
+    struct record r1 = {.key = 10, .value = 100};
     hash_add(ht, &r1.hash_link, TEST_HT_BITS, hash_int(r1.key));
-    TEST_ASSERT(!hlist_unhashed(&r1.hash_link), "node is hashed after add");
+
+    int bucket_idx = hash_int(10) & (HT_SIZE(TEST_HT_BITS) - 1);
+    TEST_ASSERT(!list_empty(&ht[bucket_idx]), "bucket non-empty after add");
 
     /* --- Lookup: find entry by key --- */
 
     int found = 0;
-    uint64 bucket_idx = hash_int(10) & (HT_SIZE(TEST_HT_BITS) - 1);
-    struct hlist_node *pos;
-    hlist_for_each(pos, &ht[bucket_idx]) {
-        struct record *r = hlist_entry(pos, struct record, hash_link);
-        if (r->key == 10) {
+    struct record *pos;
+    list_for_each_entry(pos, &ht[bucket_idx], hash_link) {
+        if (pos->key == 10) {
             found = 1;
-            TEST_ASSERT(r->value == 100, "found entry has correct value");
+            TEST_ASSERT(pos->value == 100, "found entry has correct value");
         }
     }
     TEST_ASSERT(found, "lookup finds inserted entry");
 
     /* --- Multiple entries --- */
 
-    struct record r2 = {.key = 20, .value = 200, .hash_link = {NULL, NULL}};
-    struct record r3 = {.key = 30, .value = 300, .hash_link = {NULL, NULL}};
-    struct record r4 = {.key = 40, .value = 400, .hash_link = {NULL, NULL}};
+    struct record r2 = {.key = 20, .value = 200};
+    struct record r3 = {.key = 30, .value = 300};
+    struct record r4 = {.key = 40, .value = 400};
 
     hash_add(ht, &r2.hash_link, TEST_HT_BITS, hash_int(r2.key));
     hash_add(ht, &r3.hash_link, TEST_HT_BITS, hash_int(r3.key));
@@ -70,10 +65,9 @@ test_hashtable(void) {
     int find_count = 0;
 
     for (int i = 0; i < 4; i++) {
-        uint64 bi = hash_int(keys[i]) & (HT_SIZE(TEST_HT_BITS) - 1);
-        hlist_for_each(pos, &ht[bi]) {
-            struct record *r = hlist_entry(pos, struct record, hash_link);
-            if (r->key == keys[i] && r->value == values[i])
+        int bi = hash_int(keys[i]) & (HT_SIZE(TEST_HT_BITS) - 1);
+        list_for_each_entry(pos, &ht[bi], hash_link) {
+            if (pos->key == keys[i] && pos->value == values[i])
                 find_count++;
         }
     }
@@ -82,14 +76,12 @@ test_hashtable(void) {
     /* --- Deletion --- */
 
     hash_del(&r2.hash_link);
-    TEST_ASSERT(hlist_unhashed(&r2.hash_link), "node unhashed after del");
 
     /* r2 should not be found anymore. */
     found = 0;
     bucket_idx = hash_int(20) & (HT_SIZE(TEST_HT_BITS) - 1);
-    hlist_for_each(pos, &ht[bucket_idx]) {
-        struct record *r = hlist_entry(pos, struct record, hash_link);
-        if (r->key == 20)
+    list_for_each_entry(pos, &ht[bucket_idx], hash_link) {
+        if (pos->key == 20)
             found = 1;
     }
     TEST_ASSERT(!found, "deleted entry not found in bucket");
@@ -97,37 +89,29 @@ test_hashtable(void) {
     /* Others still present. */
     found = 0;
     bucket_idx = hash_int(10) & (HT_SIZE(TEST_HT_BITS) - 1);
-    hlist_for_each(pos, &ht[bucket_idx]) {
-        struct record *r = hlist_entry(pos, struct record, hash_link);
-        if (r->key == 10)
+    list_for_each_entry(pos, &ht[bucket_idx], hash_link) {
+        if (pos->key == 10)
             found = 1;
     }
     TEST_ASSERT(found, "other entries survive deletion");
 
     /* --- Collision handling (same bucket) --- */
 
-    /*
-     * Force entries into the same bucket by choosing keys that
-     * hash to the same bucket index with 16 buckets.
-     * We just insert many and verify all are retrievable.
-     */
     DEFINE_HASHTABLE(ht2, 2); /* 4 buckets — high collision rate */
+    hash_init(ht2, 2);
 
     struct record recs[8];
     for (int i = 0; i < 8; i++) {
         recs[i].key = i;
         recs[i].value = i * 10;
-        recs[i].hash_link.next = NULL;
-        recs[i].hash_link.pprev = NULL;
         hash_add(ht2, &recs[i].hash_link, 2, hash_int(recs[i].key));
     }
 
     find_count = 0;
     for (int i = 0; i < 8; i++) {
-        uint64 bi = hash_int(i) & (HT_SIZE(2) - 1);
-        hlist_for_each(pos, &ht2[bi]) {
-            struct record *r = hlist_entry(pos, struct record, hash_link);
-            if (r->key == i && r->value == i * 10)
+        int bi = hash_int(i) & (HT_SIZE(2) - 1);
+        list_for_each_entry(pos, &ht2[bi], hash_link) {
+            if (pos->key == i && pos->value == i * 10)
                 find_count++;
         }
     }
@@ -141,10 +125,9 @@ test_hashtable(void) {
     for (int i = 0; i < 8; i++) {
         if (i == 3 || i == 5)
             continue;
-        uint64 bi = hash_int(i) & (HT_SIZE(2) - 1);
-        hlist_for_each(pos, &ht2[bi]) {
-            struct record *r = hlist_entry(pos, struct record, hash_link);
-            if (r->key == i && r->value == i * 10)
+        int bi = hash_int(i) & (HT_SIZE(2) - 1);
+        list_for_each_entry(pos, &ht2[bi], hash_link) {
+            if (pos->key == i && pos->value == i * 10)
                 find_count++;
         }
     }
@@ -153,9 +136,8 @@ test_hashtable(void) {
     /* Deleted entries should be gone. */
     found = 0;
     bucket_idx = hash_int(3) & (HT_SIZE(2) - 1);
-    hlist_for_each(pos, &ht2[bucket_idx]) {
-        struct record *r = hlist_entry(pos, struct record, hash_link);
-        if (r->key == 3)
+    list_for_each_entry(pos, &ht2[bucket_idx], hash_link) {
+        if (pos->key == 3)
             found = 1;
     }
     TEST_ASSERT(!found, "deleted collision entry not found");

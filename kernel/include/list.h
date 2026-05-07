@@ -104,22 +104,17 @@ struct list_head {
 };
 
 /*
- * LIST_HEAD_INIT — static initializer for a list head (points to itself).
+ * LIST_HEAD — declare and initialize a list head variable (points to itself).
  */
-#define LIST_HEAD_INIT(name)                                                                       \
-    { &(name), &(name) }
-
-/*
- * LIST_HEAD — declare and initialize a list head variable.
- */
-#define LIST_HEAD(name) struct list_head name = LIST_HEAD_INIT(name)
+#define LIST_HEAD(name) struct list_head name = {&(name), &(name)}
 
 /*
  * INIT_LIST_HEAD — runtime initialization for a list head.
  */
 static inline void
 INIT_LIST_HEAD(struct list_head *head) {
-    /* TODO: make the list point to itself (empty). */
+    head->next = head;
+    head->prev = head;
 }
 
 /*
@@ -127,7 +122,10 @@ INIT_LIST_HEAD(struct list_head *head) {
  */
 static inline void
 __list_add(struct list_head *new, struct list_head *prev, struct list_head *next) {
-    /* TODO: wire new between prev and next. */
+    prev->next = new;
+    new->next = next;
+    next->prev = new;
+    new->prev = prev;
 }
 
 /*
@@ -136,7 +134,7 @@ __list_add(struct list_head *new, struct list_head *prev, struct list_head *next
  */
 static inline void
 list_add(struct list_head *new, struct list_head *head) {
-    /* TODO: add between head and head->next. */
+    __list_add(new, head, head->next);
 }
 
 /*
@@ -145,7 +143,7 @@ list_add(struct list_head *new, struct list_head *head) {
  */
 static inline void
 list_add_tail(struct list_head *new, struct list_head *head) {
-    /* TODO: add between head->prev and head. */
+    __list_add(new, head->prev, head);
 }
 
 /*
@@ -153,7 +151,8 @@ list_add_tail(struct list_head *new, struct list_head *head) {
  */
 static inline void
 __list_del(struct list_head *prev, struct list_head *next) {
-    /* TODO: bypass the entry between prev and next. */
+    prev->next = next;
+    next->prev = prev;
 }
 
 /*
@@ -163,7 +162,9 @@ __list_del(struct list_head *prev, struct list_head *next) {
  */
 static inline void
 list_del(struct list_head *entry) {
-    /* TODO: unlink entry, then poison its prev/next with NULL. */
+    __list_del(entry->prev, entry->next);
+    entry->prev = NULL;
+    entry->next = NULL;
 }
 
 /*
@@ -171,8 +172,8 @@ list_del(struct list_head *entry) {
  */
 static inline int
 list_empty(struct list_head *head) {
-    /* TODO */
-    return 0;
+    /* one direction suffices if the list is well-formed (symmetric invariant) */
+    return head->next == head;
 }
 
 /*
@@ -180,8 +181,8 @@ list_empty(struct list_head *head) {
  */
 static inline int
 list_is_singular(struct list_head *head) {
-    /* TODO */
-    return 0;
+    /* non-empty and only one entry: next and prev both point to the same node */
+    return !list_empty(head) && head->next == head->prev;
 }
 
 /*

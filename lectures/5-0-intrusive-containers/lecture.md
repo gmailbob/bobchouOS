@@ -66,9 +66,11 @@ Problems:
    > returns immediately or panics — but the principle remains: even without
    > sleeping, allocation is variable-latency work you want to avoid in
    > performance-critical paths.
-2. **No multi-membership** — if a process is in 4 containers, that's 4 separate
-   allocated nodes. You're paying 4× the memory overhead and 4× the allocation
-   bookkeeping.
+2. **Separate allocation per membership** — if a process is in 4 containers,
+   that's 4 separate `kmalloc` calls to create wrapper nodes, and 4 `kmfree`
+   calls on removal. (The intrusive approach also stores link pointers — but
+   they're pre-allocated inside the struct in one shot, with no per-insertion
+   allocation and no cleanup bookkeeping.)
 3. **Indirection** — given a `list_node`, you dereference `.data` to reach the
    process. One extra pointer hop, one cache miss.
 4. **Removal requires finding the node** — if you have a `struct proc *p` and
@@ -86,14 +88,13 @@ struct proc {
     struct list_head all_list;   // link for global list
     struct list_head run_list;   // link for run queue
     struct list_head sibling;    // link for parent's children list
-    struct hlist_node pid_link;  // link for PID hash table
+    struct list_head pid_link;   // link for PID hash table bucket chain
 };
 ```
 
 No external allocation. The "container plumbing" is embedded. One struct in four
-containers costs exactly 8 pointers total (each `list_head` is prev+next, each
-`hlist_node` is next+pprev), all embedded in the struct itself — no separate
-nodes. Removal is O(1) given just `p` — you know exactly where `p->run_list` is
+containers costs exactly 8 pointers total (4 `list_head` fields × 2 pointers
+each), all embedded in the struct itself — no separate nodes. Removal is O(1) given just `p` — you know exactly where `p->run_list` is
 and can unlink it directly.
 
 ### Who uses what
@@ -322,7 +323,7 @@ executes, so unlinking the current node doesn't lose your place.
 
 ---
 
-## Part 4: Hash Table with `hlist`
+## Part 4: Hash Table
 
 ### Why buckets need a list at all
 
@@ -333,95 +334,121 @@ index. You need somewhere to put all entries that land in the same bucket.
 
 Two strategies exist:
 - **Separate chaining** (what we use) — each bucket holds a linked list. On
-  collision, prepend to the bucket's chain. Deletion is O(1) via pprev.
+  collision, prepend to the bucket's chain. Deletion is O(1).
 - **Open addressing** — on collision, probe other array slots. No lists, but
   deletion requires tombstones, and performance degrades as load factor rises.
 
-Linux (and we) use separate chaining because intrusive `hlist_node` fits
-naturally, deletion is trivial, and load factor > 1.0 is handled gracefully
-(chains just get longer). With a good hash and enough buckets, average chain
-length = n/buckets, so lookup is O(1) amortized.
+We use separate chaining because intrusive `list_head` fits naturally, deletion
+is trivial (already O(1) from our doubly-linked list), and load factor > 1.0 is
+handled gracefully (chains just get longer). With a good hash and enough buckets,
+average chain length = n/buckets, so lookup is O(1) amortized.
 
-### Why `hlist` instead of reusing `list_head` for bucket chains?
+### Our approach: reuse `list_head` for bucket chains
 
-We already have `list_head` — why introduce a second list type? Memory:
+Since we already have `list_head` with O(1) insertion and removal, we can reuse
+it directly for hash bucket chains. Each bucket is simply a `list_head` sentinel,
+and entries embed a `list_head` for hash membership — same primitive, no new
+types needed.
 
-- 64 buckets × `list_head` (16 bytes each) = 1024 bytes for empty sentinels
-- 64 buckets × `hlist_head` (8 bytes each) = 512 bytes
-
-Half the memory. Most buckets are empty most of the time, so that unused `prev`
-pointer on each sentinel is pure waste. The tradeoff: no O(1) tail insertion. But
-order within a bucket doesn't matter — head insertion is all we need.
-
-### The `pprev` trick
-
-A singly-linked list has the classic removal problem: to unlink a node, you need
-the *predecessor's* `next` pointer. Normally that means scanning from the head.
-
-`hlist_node` solves this with `pprev` — a pointer to the *pointer that points to
-us*:
-
-```
-    hlist_head            node A                node B
-    +--------+          +--------------+      +---------------+
-    | first --------->  | next -------------> | next --> NULL |
-    +--------+          | pprev ---+   |      | pprev ---+    |
-        ^               +----------|---+      +----------|----+
-        |                          |                     |
-        +--------------------------+                     |
-                                    <-------------------+
-                    (points to &head->first)   (points to &A->next)
-```
-
-- Node A's `pprev` = `&head->first` (the pointer that references A)
-- Node B's `pprev` = `&A->next` (the pointer that references B)
-
-To delete node B (last in chain, so `B->next` is NULL):
 ```c
-*(B->pprev) = B->next;   // A->next = NULL
-// B->next is NULL so no pprev to update — done in O(1)
+#define PID_HASH_BITS 6
+struct list_head pid_table[1 << PID_HASH_BITS];   // 64 buckets, each a list_head
+
+struct proc {
+    int pid;
+    struct list_head all_list;    // global process list
+    struct list_head run_list;    // run queue
+    struct list_head pid_link;    // hash table bucket chain
+};
 ```
 
-To delete node A:
+Insert:
 ```c
-*(A->pprev) = A->next;   // head->first = A->next (which is B)
-if (A->next)
-    A->next->pprev = A->pprev;  // B->pprev = &head->first
+int bucket = hash_int(p->pid) & (HT_SIZE(PID_HASH_BITS) - 1);
+list_add(&p->pid_link, &pid_table[bucket]);
 ```
 
-Same code handles "first in bucket" and "middle of bucket" — no special case,
-because `pprev` abstracts away *what kind* of pointer references us.
+Remove:
+```c
+list_del(&p->pid_link);   // O(1), no need to know which bucket
+```
+
+This is the approach FreeBSD and Windows take — standard doubly-linked lists for
+everything, including hash bucket chains. Simple, uniform, and already proven.
+
+### How Linux does it differently: `hlist`
+
+> Linux introduces a separate type (`hlist_head` / `hlist_node`) to save memory
+> on the bucket array. Each `hlist_head` is a single pointer (8 bytes) vs our
+> `list_head` sentinel (16 bytes). With 64 buckets, that's 512 vs 1024 bytes —
+> half the memory for the array.
+>
+> To get O(1) removal without a full `prev` pointer, `hlist_node` uses a
+> **pprev trick**: `pprev` is a pointer to the *pointer* that references this
+> node (either `&head->first` or `&prev_node->next`). Removal becomes
+> `*(node->pprev) = node->next` — one indirection handles both "first in bucket"
+> and "middle of bucket" uniformly. This is the same pointer-to-pointer pattern we 
+> used in `slab_destroy` (Round 4-2), where `struct page **ps` walks the slab
+> list to find the pointer that references the target slab, then unlinks via
+> `*ps = slab->next_slab`. The difference: in our slab code, we *scan* to find
+> that pointer (O(n)); in hlist, each node *stores* its own pprev at insert time,
+> making removal O(1) without scanning.
+>
+> The tradeoff: more subtle pointer scheme, a second set of types/macros, but
+> less memory when you have many hash tables with many buckets (Linux has dozens).
+> At our scale (one PID table, <100 processes), the savings are negligible.
+> We choose simplicity — one list primitive for everything.
 
 ### Hash function
 
 We need to turn a PID (integer) into a bucket index. The standard approach is
 **multiplicative hashing**:
 
-```
-bucket = (key × large_odd_constant) >> (64 - bits)
-```
-
-This extracts the high bits of the product, which have the best distribution.
-A simpler (slightly worse) alternative masks the low bits instead:
+**Step 1 — multiply** the key by a large odd constant:
 
 ```
-bucket = (key × constant) & (num_buckets - 1)
+product = key × 0x61C8864680B583EBull
 ```
 
-The mask variant is what we'll use — it's one instruction and good enough for
-our PID range. Linux's `hash_long()` uses the shift variant for maximum quality.
+This constant is `2^64 / φ` (golden ratio hash) — what Linux uses in
+`include/linux/hash.h`. It's not cryptographic; it just ensures sequential keys
+(PID 1, 2, 3, ...) spread across buckets rather than clustering. The constant is
+large (fills most of 64 bits) and odd (guarantees the multiplication is
+invertible mod 2^64, so no two inputs produce the same output).
 
-The constant should have a good mix of 0s and 1s. The "golden ratio hash" uses
-`2^64 / φ ≈ 0x61C8864680B583EB` — this is what Linux uses in
-`include/linux/hash.h`. It's not cryptographic (not trying to be); it just
-ensures that sequential keys (PID 1, 2, 3, ...) spread across buckets rather
-than clustering.
+The multiplication intentionally overflows — unsigned overflow in C is
+well-defined (wraps mod 2^64), and the wrap-around is part of the mixing.
 
-Why multiplicative works well for integer keys:
-- Sequential inputs produce well-distributed outputs (unlike modulo by a
-  power-of-2 which only uses low bits of the key)
+**Step 2 — extract a bucket index** from the 64-bit product. Two ways:
+
+```
+Shift variant:  bucket = product >> (64 - bits)       // extract high bits
+Mask variant:   bucket = product & (num_buckets - 1)  // extract low bits
+```
+
+Same product, same constant — the only difference is which bits you keep. The
+high bits have slightly better distribution because multiplication carries
+propagate upward — the high bits are influenced by all bits of the key, while
+the low bits are mostly influenced by the low bits of the key. In practice the
+difference is small for our scale (sequential PIDs, tens of processes).
+
+We use the mask variant — it's conventional (Linux's hashtable API does the same)
+and `num_buckets - 1` is always available since our table sizes are powers of 2.
+
+Why multiplicative hashing works well:
+- Sequential inputs produce well-distributed outputs (unlike plain `key %
+  num_buckets` which, with power-of-2 size, just uses the low bits of the key
+  directly — no mixing at all)
 - Single multiplication — fast on modern hardware
 - No division, no branching
+
+> **Why power-of-2 bucket counts, not primes?** With modulo hashing (`key % n`),
+> a prime bucket count avoids clustering when keys share common factors with n.
+> But multiplicative hashing gets its distribution from the multiply itself — the
+> bucket count just slices the output. Power-of-2 lets us use `& (size - 1)`
+> (single AND instruction) instead of expensive division. Java's HashMap made
+> the same switch from prime to power-of-2 sizes once it adopted a better hash
+> function.
 
 ### Lookup pattern
 
@@ -430,10 +457,9 @@ because only the caller knows what the key is and how to compare:
 
 ```c
 struct proc *find_proc(int pid) {
-    uint64 bucket = hash_int(pid) & (HT_SIZE(PID_HASH_BITS) - 1);
-    struct hlist_node *pos;
-    hlist_for_each(pos, &pid_table[bucket]) {
-        struct proc *p = hlist_entry(pos, struct proc, pid_link);
+    int bucket = hash_int(pid) & (HT_SIZE(PID_HASH_BITS) - 1);
+    struct proc *p;
+    list_for_each_entry(p, &pid_table[bucket], pid_link) {
         if (p->pid == pid)
             return p;
     }
@@ -449,20 +475,108 @@ combination of fields.
 
 ---
 
-## Part 5: bobchouOS vs Linux
+## Part 5: Putting It All Together
+
+Let's trace a concrete example showing how lists and hash table work together.
+Four processes a, b, c, d — all exist, but only a and c are runnable:
+
+```c
+struct proc {
+    int pid;
+    struct list_head all_list;    // link for global list
+    struct list_head run_list;    // link for run queue
+    struct list_head pid_link;    // link for hash table bucket chain
+};
+
+LIST_HEAD(all_procs);                          // sentinel for global list
+LIST_HEAD(run_queue);                          // sentinel for run queue
+#define PID_HASH_BITS 2                        // 4 buckets (tiny, for illustration)
+struct list_head pid_table[1 << PID_HASH_BITS]; // each bucket is a list_head sentinel
+
+struct proc a = { .pid = 1 };   // runnable
+struct proc b = { .pid = 2 };   // sleeping
+struct proc c = { .pid = 3 };   // runnable
+struct proc d = { .pid = 4 };   // sleeping
+```
+
+### The lists
+
+```
+all_procs list (all 4 procs, linked via .all_list):
+    all_procs <-> a.all_list <-> b.all_list <-> c.all_list <-> d.all_list <-> (back to all_procs)
+
+run_queue list (only runnable procs, linked via .run_list):
+    run_queue <-> a.run_list <-> c.run_list <-> (back to run_queue)
+```
+
+b and d's `.run_list` fields are not in any list (NULL-poisoned or never added).
+
+Key observations:
+- Each `list_head` field connects to other `list_head` fields **of the same
+  name** in other procs. `a.all_list.next` points to `&b.all_list`, NOT to `&b`
+  and NOT to `&b.run_list`.
+- The two `list_head` fields inside a single proc participate in **completely
+  independent circular chains**. They share no pointers with each other.
+- To recover `struct proc *` from a list node pointer, use `container_of` —
+  e.g., `container_of(a.all_list.next, struct proc, all_list)` gives you `&b`.
+
+### The hash table
+
+All 4 procs are in the hash table regardless of state — it's purely for "given a
+PID, find the proc." Suppose `hash_int` distributes them across 4 buckets like:
+
+```
+pid_table[0]:  (empty — sentinel points to itself)
+pid_table[1]:  <-> d.pid_link <-> a.pid_link <-> (back to pid_table[1])   (pid 4 and 1 collide)
+pid_table[2]:  <-> b.pid_link <-> (back to pid_table[2])                  (pid 2 alone)
+pid_table[3]:  <-> c.pid_link <-> (back to pid_table[3])                  (pid 3 alone)
+```
+
+Key observations:
+- **Same `list_head` everywhere** — each bucket is a circular list just like
+  `all_procs` or `run_queue`. No new types. Same `list_add`, `list_del`,
+  `list_for_each_entry` work here.
+- **Collisions are handled by chaining.** pid 1 and pid 4 land in the same
+  bucket — you walk the chain comparing keys until you find a match.
+- **O(1) removal without knowing the bucket.** `list_del(&a.pid_link)` unlinks
+  via prev/next — never needs to know which bucket `a` is in.
+- **The hash table doesn't track process state.** All procs are in it. The lists
+  track "all procs" and "runnable procs"; the hash table tracks identity (PID
+  lookup).
+
+### How the three structures cooperate
+
+| Operation | Structure used | Complexity |
+|-----------|---------------|------------|
+| Find proc by PID (kill, waitpid) | `pid_table` hash | O(1) amortized |
+| Pick next process to run | `run_queue` list (pop front) | O(1) |
+| Enumerate all procs (ps) | `all_procs` list | O(n) |
+| Process yields/sleeps | Remove from `run_queue` | O(1) |
+| Process wakes up | Add to `run_queue` tail | O(1) |
+| Process exits | Remove from all three | O(1) each |
+
+One proc, three embedded link fields, three independent data structures, zero
+external allocation.
+
+---
+
+## Part 6: bobchouOS vs Linux
 
 | Aspect | Linux | bobchouOS |
 |--------|-------|-----------|
 | Doubly-linked list | `<linux/list.h>` | `list.h` (same API) |
-| Hash table | `<linux/hashtable.h>` | `hashtable.h` (same API) |
+| Hash bucket chains | `hlist_head`/`hlist_node` (pprev trick) | `list_head` (same type as all other lists) |
+| Bucket head memory | 8 bytes per bucket | 16 bytes per bucket |
 | `container_of` type check | `BUILD_BUG_ON` + `typeof` validation | Simple subtraction only |
 | `list_del` poison | `LIST_POISON1/2` (0xdead addresses) | NULL (simpler, still detectable) |
 | RCU-safe variants | `list_for_each_entry_rcu`, `hlist_for_each_entry_rcu` | Not needed (no SMP, no RCU) |
 | Hash function | `hash_long()` in `<linux/hash.h>` | `hash_int()` (same algorithm) |
 | Lock-free reads | RCU + `rcu_dereference` | Single-hart, no concurrency concern |
 
-We're implementing the same core API, skipping the concurrency extensions we
-don't need yet.
+We use `list_head` for everything — including hash bucket chains — matching the
+FreeBSD/Windows approach. One list primitive, no extra types. Linux's hlist
+optimization saves memory on bucket arrays at the cost of a second set of
+types/macros; we skip that complexity at our scale.
 
 ---
 
@@ -480,13 +594,12 @@ don't need yet.
 | `list_for_each_entry(pos, head, member)` | O(n) | Typed iteration |
 | `container_of(ptr, type, member)` | O(1) | Node → enclosing struct |
 
-### hashtable.h — Intrusive hash table
+### hashtable.h — Hash table (list_head buckets)
 
 | Operation | Complexity | Notes |
 |-----------|-----------|-------|
-| `hash_init(ht, bits)` | O(2^bits) | Zero all buckets |
-| `hash_add(ht, node, bits, hash)` | O(1) | Front-insert into bucket |
-| `hash_del(node)` | O(1) | Unlink via pprev |
-| `hlist_unhashed(node)` | O(1) | pprev == NULL? |
-| Lookup by key | O(chain length) | Caller iterates + compares |
+| `hash_init(ht, bits)` | O(2^bits) | INIT_LIST_HEAD each bucket |
+| `hash_add(ht, node, bits, hash)` | O(1) | list_add into bucket |
+| `hash_del(node)` | O(1) | list_del (same as any list removal) |
+| Lookup by key | O(chain length) | list_for_each_entry + compare |
 | `hash_int(val)` | O(1) | Multiplicative hash |
