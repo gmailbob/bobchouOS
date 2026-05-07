@@ -27,11 +27,15 @@ TARGET  = kernel.elf
 
 OBJS    = kernel/arch/entry.o \
           kernel/arch/kernel_vec.o \
+          kernel/arch/m_vec.o \
+          kernel/arch/swtch.o \
+          kernel/arch/sbi.o \
           kernel/main.o \
           kernel/trap.o \
           kernel/kalloc.o \
           kernel/vm.o \
           kernel/kmalloc.o \
+          kernel/proc.o \
           kernel/drivers/uart.o \
           kernel/lib/string.o \
           kernel/lib/kprintf.o

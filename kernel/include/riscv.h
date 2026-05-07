@@ -1,64 +1,34 @@
 /*
- * riscv.h — RISC-V CSR access helpers and bit definitions.
- *
- * Provides generic macros for reading/writing any CSR, plus
- * named constants for commonly used bit fields.
+ * riscv.h — RISC-V constants, CSR access helpers, and bit definitions.
  *
  * This header is shared between C and assembly (.S) files.
+ * Structure:
+ *   1. Assembly-safe #defines (constants, bit masks) — usable from both
+ *   2. C-only section (types, inline asm macros, inline functions)
+ *
  * .S files are preprocessed by gcc, so #define works, but the
  * assembler does not understand C type suffixes (UL, ULL).
  * _UL(x) expands to xUL in C and plain x in assembly.
- * __ASSEMBLER__ is predefined by gcc when preprocessing .S files,
- * so the same header produces different output depending on context.
+ * __ASSEMBLER__ is predefined by gcc when preprocessing .S files.
  *
  * Refer to Lecture 2-1, Part 9 for a detailed walkthrough.
  */
 
 #ifndef RISCV_H
 #define RISCV_H
+
 #ifdef __ASSEMBLER__
 #define _UL(x) x
 #else
 #define _UL(x) x##UL
 #endif
 
-/* C-only: types and inline asm macros that the assembler can't parse. */
-#ifndef __ASSEMBLER__
-
-#include "types.h"
-
-/* ---- Generic CSR read/write macros ----
- *
- * Usage:
- *   uint64 val = csrr(sstatus);
- *   csrw(satp, 0);
- *
- * These use GCC statement expressions ({ ... }) so the read macro
- * can return a value.  The # operator stringifies the csr argument
- * so that csrr(sstatus) expands to the assembly string "sstatus".
- */
-#define csrr(csr)                                                                                  \
-    ({                                                                                             \
-        uint64 __val;                                                                              \
-        asm volatile("csrr %0, " #csr : "=r"(__val));                                              \
-        __val;                                                                                     \
-    })
-
-#define csrw(csr, val) ({ asm volatile("csrw " #csr ", %0" : : "r"(val)); })
-
-/* ---- TLB flush ---- */
-static inline void
-sfence_vma(void) {
-    asm volatile("sfence.vma zero, zero");
-}
-
-/* ---- satp helpers (Sv39) ---- */
-#define SATP_SV39 (8UL << 60)
-#define MAKE_SATP(root_pt) (SATP_SV39 | ((uint64)(root_pt) >> 12))
-
-#endif /* !__ASSEMBLER__ */
+/* ===================================================================
+ * Assembly-safe constants (usable from both .S and .c files)
+ * =================================================================== */
 
 // clang-format off
+
 /* ---- mstatus bits ---- */
 #define MSTATUS_MPP_MASK    (_UL(3) << 11)
 #define MSTATUS_MPP_M       (_UL(3) << 11)
@@ -107,24 +77,61 @@ sfence_vma(void) {
 #define EXC_STORE_PAGE      15
 
 /* ---- Page size and alignment (Sv39) ---- */
+#define PG_SIZE             (_UL(1) << 12)  /* 4096 bytes per page */
+#define PG_SHIFT            12              /* log2(PG_SIZE) */
 
-#define PG_SIZE              (_UL(1) << 12)  /* 4096 bytes per page */
-#define PG_SHIFT             12              /* log2(PG_SIZE) */
-
-#define PG_ROUND_UP(a)       (((a) + PG_SIZE - 1) & ~(PG_SIZE - 1))
-#define PG_ROUND_DOWN(a)     ((a) & ~(PG_SIZE - 1))
+#define PG_ROUND_UP(a)      (((a) + PG_SIZE - 1) & ~(PG_SIZE - 1))
+#define PG_ROUND_DOWN(a)    ((a) & ~(PG_SIZE - 1))
 
 /* ---- PMP (Physical Memory Protection) ---- */
-#define PMP_NAPOT_ALL        _UL(0x3fffffffffffff)  /* all 54 addr bits set */
-#define PMPCFG_TOR_RWX       _UL(0x0f)              /* TOR mode, R+W+X */
+#define PMP_NAPOT_ALL       _UL(0x3fffffffffffff)  /* all 54 addr bits set */
+#define PMPCFG_TOR_RWX      _UL(0x0f)              /* TOR mode, R+W+X */
 
-/* ---- CLINT (Core Local Interruptor) memory-mapped registers (QEMU virt) ---- */
-#define CLINT_BASE           _UL(0x2000000)
+/* ---- CLINT (Core Local Interruptor) — QEMU virt MMIO addresses ---- */
+#define CLINT_BASE          _UL(0x2000000)
 #define CLINT_MTIMECMP(hart) (CLINT_BASE + 0x4000 + 8 * (hart))
-#define CLINT_MTIME          (CLINT_BASE + 0xBFF8)
+#define CLINT_MTIME         (CLINT_BASE + 0xBFF8)
 
-/* Timer interval: 100,000 ticks = 10ms at 10 MHz */
-#define TIMER_INTERVAL       _UL(100000)
+/* ---- Timer ---- */
+#define TIMER_INTERVAL      _UL(100000)    /* 100,000 ticks = 10ms at 10 MHz */
+
 // clang-format on
+
+/* ===================================================================
+ * C-only: types, inline asm macros, and inline functions.
+ * The assembler cannot parse anything below this guard.
+ * =================================================================== */
+
+#ifndef __ASSEMBLER__
+
+#include "types.h"
+
+/* ---- Generic CSR read/write ---- */
+#define csrr(csr)                                                                                  \
+    ({                                                                                             \
+        uint64 __val;                                                                              \
+        asm volatile("csrr %0, " #csr : "=r"(__val));                                              \
+        __val;                                                                                     \
+    })
+
+#define csrw(csr, val) ({ asm volatile("csrw " #csr ", %0" : : "r"(val)); })
+
+/* ---- TLB flush ---- */
+static inline void
+sfence_vma(void) {
+    asm volatile("sfence.vma zero, zero");
+}
+
+/* ---- satp helpers (Sv39) ---- */
+#define SATP_SV39 (8UL << 60)
+#define MAKE_SATP(root_pt) (SATP_SV39 | ((uint64)(root_pt) >> 12))
+
+/* ---- CLINT MMIO read (accessible from S-mode via PMP) ---- */
+static inline uint64
+read_mtime(void) {
+    return *(volatile uint64 *)CLINT_MTIME;
+}
+
+#endif /* !__ASSEMBLER__ */
 
 #endif /* RISCV_H */

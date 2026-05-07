@@ -705,19 +705,72 @@ the SBI (Supervisor Binary Interface) — a set of services S-mode can
 call via `ecall`. But we run with `-bios none` — there is no OpenSBI.
 Our own `entry.S` *is* the M-mode code.
 
+> **How OpenSBI is structured:** OpenSBI is primarily written in C, with
+> a thin assembly entry layer. When an ecall arrives, the assembly saves
+> registers onto an M-mode stack, then calls `sbi_trap_handler()` (a C
+> function) which dispatches by extension ID (a7) to the appropriate
+> handler (e.g., `sbi_timer_set()` writes mtimecmp). OpenSBI can use C
+> because it sets up its own M-mode stack, has its own memory region
+> (protected by PMP from S-mode), and runs a full C runtime. It's
+> essentially a small firmware OS.
+>
+> Our M-mode handler is ~20 instructions total — writing it in C would
+> mean setting up a separate M-mode C stack and call frame, which is more
+> overhead than the actual work. At our scale, pure assembly is simpler.
+>
+> **The full picture — what runs where:**
+>
+> ```
+> S-mode (kernel .text, kernel stack):           M-mode (m_vec.S, no stack):
+> ┌────────────────────────────────────┐         ┌──────────────────────────────┐
+> │ scheduler()                        │         │                              │
+> │   → sbi_set_timer(deadline)        │         │                              │
+> │       li  a7, SBI_SET_TIMER        │         │                              │
+> │       ecall ──────────────────────────────>  │ m_vec:                       │
+> │                                    │         │   csrr mcause → ecall from S │
+> │       (blocked until mret)         │         │   read a7 → SBI_SET_TIMER    │
+> │                                    │         │   write a0 to mtimecmp       │
+> │       ret  <──────────────────────────────   │   mepc += 4                  │
+> │   (continues in scheduler)         │         │   mret ─────────────────>    │
+> └────────────────────────────────────┘         └──────────────────────────────┘
+> ```
+>
+> The S-mode wrapper (`sbi.S`) is a normal kernel function — linked in
+> the kernel `.text`, runs on the kernel stack, called by the scheduler.
+> It just loads registers and does `ecall`. The M-mode handler
+> (`m_vec.S`) receives the trap, does the work in registers only (no
+> stack, uses `mscratch` for saves), and `mret` back. Two different
+> files, two different privilege levels, two different memory contexts.
+
 So we write our own **mini-SBI**: S-mode issues `ecall`, which traps
 into M-mode (`mcause = 9`, environment call from S-mode). Our M-mode
 handler dispatches on `a7` and performs the operation:
 
-```c
-// S-mode kernel code:
-void sbi_set_timer(uint64 deadline) {
-    // a0 = deadline, a7 = function ID
-    register uint64 a0 asm("a0") = deadline;
-    register uint64 a7 asm("a7") = SBI_SET_TIMER;
-    asm volatile("ecall" : : "r"(a0), "r"(a7));
-}
+```asm
+// S-mode wrapper (sbi.S) — what we use:
+sbi_set_timer:          // a0 = deadline (already in place per calling convention)
+    li  a7, SBI_SET_TIMER
+    ecall
+    ret
 ```
+
+> **Alternative: C with inline asm (what OpenSBI-consuming kernels do):**
+>
+> ```c
+> void sbi_set_timer(uint64 deadline) {
+>     register uint64 a0 asm("a0") = deadline;
+>     register uint64 a7 asm("a7") = SBI_SET_TIMER;
+>     asm volatile("ecall" : : "r"(a0), "r"(a7));
+> }
+> ```
+>
+> The `register ... asm("a0")` syntax is a GCC extension: it pins a C
+> variable to a specific hardware register. `= deadline` puts the value
+> there. The `asm volatile("ecall" : : "r"(a0), "r"(a7))` tells the
+> compiler "when you emit the ecall instruction, a0 and a7 must hold
+> these values." We use the assembly version instead because it's
+> three instructions doing three instructions of work — no syntactic
+> overhead.
 
 ```asm
 // M-mode handler in entry.S (currently only handles timer interrupt):

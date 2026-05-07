@@ -15,6 +15,7 @@
 
 #include "riscv.h"
 #include "kprintf.h"
+#include "proc.h"
 
 /* ---- Exception name table ----
  *
@@ -54,10 +55,6 @@ exc_name(uint64 scause) {
     return "unknown exception";
 }
 
-/* Timer tick counter. Volatile because it is modified in interrupt
- * context (kernel_trap) and read from normal context (kmain loop). */
-volatile uint64 ticks = 0;
-
 void
 kernel_trap(void) {
     uint64 sepc_val = csrr(sepc);
@@ -79,8 +76,9 @@ kernel_trap(void) {
             /* Timer tick (forwarded from M-mode via SSIP).
              * Clear SSIP so we don't re-trap on sret. */
             csrw(sip, csrr(sip) & ~SIP_SSIP);
-            if (++ticks % 100 == 0)
-                kprintf("timer: %d seconds\n", (int)(ticks / 100));
+            /* Preempt: if a process is running, yield it. */
+            if (this_cpu()->proc)
+                yield();
             break;
 
             /* IRQ_S_EXT: PLIC external interrupts — future round */

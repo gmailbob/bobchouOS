@@ -10,7 +10,9 @@
 #include "kmalloc.h"
 #include "kprintf.h"
 #include "mem_layout.h"
+#include "proc.h"
 #include "riscv.h"
+#include "sbi.h"
 #include "vm.h"
 
 #ifdef RUN_TESTS
@@ -39,17 +41,14 @@ kmain(void) {
     csrw(sstatus, csrr(sstatus) | SSTATUS_SIE);
 
     kprintf("\nbobchouOS is booting...\n");
-    kprintf("running in S-mode\n");
-    /* Read sstatus to confirm we're in S-mode (or higher). */
-    kprintf("sstatus=%p\n", (void *)csrr(sstatus));
     kprintf("kernel: %p .. %p (%d bytes)\n", _kernel_start, _kernel_end,
             (int)(_kernel_end - _kernel_start));
 
     /* Memory subsystem init order matters:
-     * 1. kalloc_init    — buddy allocator; everything else calls kalloc()
+     * 1. kalloc_init         — buddy allocator; everything else calls kalloc()
      * 2. vm_create_kernel_pt — builds page table (needs kalloc for table pages)
-     * 3. vm_enable_paging   — activates Sv39 (needs the page table built)
-     * 4. kmalloc_init       — slab allocator (needs kalloc for slab pages;
+     * 3. vm_enable_paging    — activates Sv39 (needs the page table built)
+     * 4. kmalloc_init        — slab allocator (needs kalloc for slab pages;
      *    after paging so it works if we later use non-identity mapping) */
     kalloc_init();
     vm_create_kernel_pt();
@@ -59,12 +58,15 @@ kmain(void) {
 #ifdef RUN_TESTS
     run_tests();
     kprintf("tests complete, shutting down.\n");
-    *(volatile uint32 *)QEMU_SHUTDOWN = QEMU_SHUTDOWN_PASS;
+    sbi_shutdown();
 #else
-    kprintf("\ntimer interrupts enabled, waiting for ticks...\n");
+    /* Initialize process subsystem and create kernel threads. */
+    proc_init();
+    proc_create_kernel(idle_thread, "idle"); /* PID 0 */
+    proc_create_kernel(worker, "worker_a");  /* PID 1 */
+    proc_create_kernel(worker, "worker_b");  /* PID 2 */
 
-    /* Spin forever — timer interrupts will fire periodically. */
-    for (;;)
-        asm volatile("wfi");
+    kprintf("starting scheduler...\n");
+    scheduler(); /* never returns */
 #endif
 }
