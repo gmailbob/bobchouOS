@@ -36,7 +36,8 @@ kmain(void) {
      * before anything that could trap. */
     csrw(stvec, (uint64)kernel_vec);
 
-    /* Enable S-mode interrupts for timer ticks. */
+    /* Enable S-mode software interrupt (SSIP) — this is how M-mode
+     * forwards timer events to us. */
     csrw(sie, csrr(sie) | SIE_SSIE);
     csrw(sstatus, csrr(sstatus) | SSTATUS_SIE);
 

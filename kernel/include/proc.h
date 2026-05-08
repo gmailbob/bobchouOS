@@ -10,8 +10,8 @@
 #include "types.h"
 #include "list.h"
 
-/* Number of PID hash table buckets (2^PID_HASH_BITS). */
-#define PID_HASH_BITS 4
+/* Number of PID hash table buckets (2^PID_HASH_BITS = 64). */
+#define PID_HASH_BITS 6
 
 /* Maximum process name length (including null terminator). */
 #define PROC_NAME_LEN 16

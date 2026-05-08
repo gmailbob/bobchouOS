@@ -24,7 +24,7 @@ static LIST_HEAD(run_queue);
 static DEFINE_HASHTABLE(pid_table, PID_HASH_BITS);
 
 static struct cpu cpus[1];
-static int next_pid = 1;
+static int next_pid = 0;
 
 /* --- PID allocation --- */
 
@@ -37,16 +37,16 @@ alloc_pid(void) {
 
 struct cpu *
 this_cpu(void) {
-    /* TODO: return &cpus[0].
-     * (Single hart — later this reads tp to index cpus[].) */
-    return 0;
+    /* (Single hart — later this reads tp to index cpus[].) */
+    return &cpus[0];
 }
 
 struct proc *
 this_proc(void) {
-    /* TODO: return this_cpu()->proc.
-     * Panic if NULL (called from context where a process must be running). */
-    return 0;
+    /* should be called from context where a process must be running. */
+    if (this_cpu()->proc)
+        return this_cpu()->proc;
+    panic("this_proc: NULL");
 }
 
 /* --- Scheduler --- */
@@ -57,10 +57,12 @@ this_proc(void) {
  */
 static struct proc *
 pick_next(void) {
-    /* TODO: if run queue is empty, return NULL (shouldn't happen with idle).
-     * Otherwise: get the first entry via list_first_entry, remove it from
-     * the run queue with list_del, and return the proc. */
-    return 0;
+    if (list_empty(&run_queue))
+        return NULL;
+
+    struct proc *p = list_first_entry(&run_queue, struct proc, run_list);
+    list_del(&p->run_list);
+    return p;
 }
 
 /*
@@ -70,17 +72,17 @@ pick_next(void) {
  */
 void
 scheduler(void) {
-    /* TODO:
-     * struct cpu *c = this_cpu();
-     * Loop forever:
-     *   1. p = pick_next()
-     *   2. p->state = PROC_RUNNING
-     *   3. c->proc = p
-     *   4. sbi_set_timer(read_mtime() + TIMER_INTERVAL) — arm timeslice
-     *   5. swtch(&c->scheduler, &p->context)
-     *   6. (we return here when process yields/is preempted)
-     *   7. c->proc = NULL
-     */
+    struct cpu *c = this_cpu();
+    for (;;) {
+        struct proc *p = pick_next();
+        p->state = PROC_RUNNING;
+        c->proc = p;
+        kprintf("scheduler picked %s\n", p->name);
+        sbi_set_timer(read_mtime() + TIMER_INTERVAL);
+        kprintf("scheduler set timer %d\n", read_mtime() + TIMER_INTERVAL);
+        swtch(&c->scheduler, &p->context); // when p yields, go to next line (instruction)
+        c->proc = NULL;
+    }
 }
 
 /*
@@ -90,12 +92,10 @@ scheduler(void) {
  */
 void
 yield(void) {
-    /* TODO:
-     * 1. p = this_proc()
-     * 2. p->state = PROC_RUNNABLE
-     * 3. list_add_tail(&p->run_list, &run_queue)
-     * 4. swtch(&p->context, &this_cpu()->scheduler)
-     */
+    struct proc *p = this_proc();
+    p->state = PROC_RUNNABLE;
+    list_add_tail(&p->run_list, &run_queue);
+    swtch(&p->context, &this_cpu()->scheduler);
 }
 
 /* --- Process creation --- */
@@ -109,24 +109,20 @@ yield(void) {
  */
 struct proc *
 proc_create_kernel(void (*fn)(void), const char *name) {
-    /* TODO:
-     * 1. p = kmalloc(sizeof(struct proc))
-     * 2. memset p to zero
-     * 3. p->pid = alloc_pid()  (except idle: set p->pid = 0 directly)
-     * 4. Copy name into p->name
-     * 5. p->kstack = (uint64)kalloc()  — one page for kernel stack
-     * 6. Set up context:
-     *      memset(&p->context, 0, sizeof(struct context))
-     *      p->context.ra = (uint64)fn
-     *      p->context.sp = p->kstack + PG_SIZE  (top of stack, grows down)
-     * 7. p->state = PROC_RUNNABLE
-     * 8. INIT_LIST_HEAD(&p->children)
-     * 9. list_add_tail(&p->all_list, &all_procs)
-     * 10. list_add_tail(&p->run_list, &run_queue)
-     * 11. hash_add(pid_table, &p->pid_link, PID_HASH_BITS, hash_int(p->pid))
-     * 12. return p
-     */
-    return 0;
+    struct proc *p = kmalloc(sizeof(struct proc));
+    memset(p, 0, sizeof(struct proc)); // in our design kmalloc is not zeroed
+
+    p->pid = alloc_pid();
+    memcpy(p->name, name, PROC_NAME_LEN);
+    p->kstack = (uint64)kalloc();
+    p->context.ra = (uint64)fn;
+    p->context.sp = p->kstack + PG_SIZE; // top of stack, grows down
+    p->state = PROC_RUNNABLE;
+    list_add_tail(&p->all_list, &all_procs);
+    list_add_tail(&p->run_list, &run_queue);
+    hash_add(pid_table, &p->pid_link, PID_HASH_BITS, hash_int(p->pid));
+
+    return p;
 }
 
 /* --- Initialization --- */
@@ -137,11 +133,8 @@ proc_create_kernel(void (*fn)(void), const char *name) {
  */
 void
 proc_init(void) {
-    /* TODO:
-     * 1. hash_init(pid_table, PID_HASH_BITS)
-     * 2. Initialize cpus[0] (memset to zero is fine)
-     * (run_queue and all_procs are statically initialized via LIST_HEAD)
-     */
+    hash_init(pid_table, PID_HASH_BITS);
+    memset(&cpus[0], 0, sizeof(struct cpu));
 }
 
 /* --- Idle thread --- */
@@ -167,9 +160,11 @@ worker(void) {
         count++;
         if (count % 1000000 == 0)
             kprintf("[%s] %d\n", this_proc()->name, count / 1000000);
-        if (count % 3000000 == 0)
-            yield();
-        if (count >= 10000000)
+        // if (count % 23000000 == 0) {
+        //     kprintf("[%s] self-yield\n", this_proc()->name);
+        //     yield();
+        // }
+        if (count >= 100000000)
             count = 0;
     }
 }

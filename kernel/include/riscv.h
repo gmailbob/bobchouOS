@@ -53,6 +53,16 @@
 /* ---- sip (Supervisor Interrupt Pending) bits ---- */
 #define SIP_SSIP            (_UL(1) << 1)   /* supervisor software pending */
 
+/* ---- medeleg bits ---- */
+#define MEDELEG_ECALL_S     (_UL(1) << 9)
+
+/* ---- mcause ---- */
+/* Interrupt cause codes (mcause value when bit 63 = 1) */
+#define IRQ_M_TIMER         7
+
+/* Exception cause codes (mcause value when bit 63 = 0) */
+#define EXC_ECALL_S         9
+
 /* ---- scause ---- */
 #define SCAUSE_INTERRUPT    (_UL(1) << 63)
 
@@ -71,7 +81,6 @@
 #define EXC_STORE_MISALIGN  6
 #define EXC_STORE_ACCESS    7
 #define EXC_ECALL_U         8
-#define EXC_ECALL_S         9
 #define EXC_INST_PAGE       12
 #define EXC_LOAD_PAGE       13
 #define EXC_STORE_PAGE      15

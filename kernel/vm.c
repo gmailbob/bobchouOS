@@ -46,7 +46,7 @@ walk(pte_t *root_pt, uint64 va, int alloc) {
         if (*p & PTE_V)
             curr_table = (pte_t *)pte_to_pa(*p);
         else if (alloc) {
-            if (!(curr_table = kalloc()))
+            if (!(curr_table = kalloc())) /* kalloc returns zeroed — all PTEs start V=0 */
                 return NULL;
             *p = pa_to_pte((uint64)curr_table) | PTE_V;
         } else
@@ -118,6 +118,7 @@ vm_create_kernel_pt(void) {
     if (!(kernel_root_pt = kalloc()))
         panic("vm_init: failed to kalloc");
     kvm_map(QEMU_SHUTDOWN, QEMU_SHUTDOWN, PG_SIZE, PTE_R | PTE_W);
+    kvm_map(CLINT_BASE, CLINT_BASE, 0x10000, PTE_R | PTE_W);
     kvm_map(PLIC_BASE, PLIC_BASE, PLIC_SIZE, PTE_R | PTE_W);
     kvm_map(UART0_BASE, UART0_BASE, PG_SIZE, PTE_R | PTE_W);
     kvm_map((uint64)_kernel_start, (uint64)_kernel_start, (uint64)_text_end - (uint64)_kernel_start,

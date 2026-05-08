@@ -660,101 +660,111 @@ tick. (Linux calls this "tickless" or `NO_HZ_FULL` mode.)
 
 ### How S-mode talks to the timer hardware
 
-The CLINT's `mtimecmp` is a memory-mapped register (not a CSR). As we
-covered in Lecture 2-3, MMIO access is controlled by **PMP**, not by
-privilege level. We configured PMP to allow all non-M-mode code access
-to the entire physical address space — so on our QEMU setup, S-mode
-*can* read/write `mtimecmp` directly via `ld`/`sd` to `0x02004000`.
+The scheduler needs to do two things:
+1. **Read** `mtime` — to know the current time
+2. **Write** `mtimecmp` — to arm the next timeslice deadline
 
-> **What about U-mode?** PMP doesn't distinguish S from U — it only
-> separates M-mode from everything below. Both S and U pass the PMP
-> check. The mechanism that restricts U-mode is the **page table**: the
-> `U` bit in each PTE (Lecture 4-1) controls whether U-mode can access
-> a page. The kernel won't map CLINT addresses into user page tables, so
-> a user process page-faults before the physical address ever hits the
-> bus. The full access control stack:
->
-> ```
-> M-mode   → PMP doesn't apply (always allowed)
-> S-mode   → PMP check (our PMP: allow all) → page table (kernel pages: U=0, S can access)
-> U-mode   → PMP check (our PMP: allow all) → page table (CLINT not mapped, or U=0 → fault)
-> ```
->
-> So even with PMP wide open, user code can't reach device registers
-> because the page table acts as a second gate.
+Both are CLINT registers, memory-mapped at physical addresses (not
+CSRs). The question is: can S-mode do these directly, or must it ask
+M-mode?
 
-Two approaches for setting the timer:
+### Access control: PMP and page tables
 
-**Approach A — Direct MMIO access (works on our QEMU):**
+As covered in Lecture 2-3, MMIO access is controlled by **PMP** (not
+privilege level). We configured PMP to allow all non-M-mode code full
+access to the physical address space. So PMP alone would let S-mode
+(and even U-mode) access CLINT directly.
 
-Since our PMP is wide open, S-mode can write `mtimecmp` directly:
+But with paging enabled (since Round 4-1), S-mode also needs a **page
+table mapping**. Before Round 5-1, S-mode never accessed CLINT — the
+M-mode timer handler did all CLINT MMIO, and S-mode only touched CSRs
+(which bypass paging). Now that the scheduler calls `read_mtime()`,
+that load goes through the page table. Without a mapping for
+`0x2000000`, it page faults.
 
+So we add CLINT to the kernel page table:
 ```c
-*(volatile uint64 *)CLINT_MTIMECMP0 = deadline;
+kvm_map(CLINT_BASE, CLINT_BASE, 0x10000, PTE_R | PTE_W);
+```
+64KB covers the full CLINT region (msip + mtimecmp + mtime).
+
+The full access control stack:
+
+```
+M-mode   → PMP doesn't apply (always allowed), satp ignored
+S-mode   → PMP check (allow all) → page table (CLINT mapped, U=0 → S can access)
+U-mode   → PMP check (allow all) → page table (CLINT not in user PT → fault)
 ```
 
-Simple and works. However, on real hardware the firmware (OpenSBI)
-typically configures PMP to block S-mode from the CLINT region —
-otherwise a buggy kernel could disable its own timer and hang the
-system. This approach wouldn't work there.
+PMP doesn't distinguish S from U — it only separates M-mode from
+everything below. So what stops U-mode? The page table: the kernel
+won't map CLINT into user page tables, so a U-mode access faults
+before the physical address ever hits the bus (Lecture 4-1, PTE `U`
+bit).
 
-**Approach B — ecall into our M-mode handler (mini-SBI):**
+### What S-mode does directly vs via ecall
 
-On real RISC-V systems, firmware (OpenSBI) runs in M-mode and provides
-the SBI (Supervisor Binary Interface) — a set of services S-mode can
-call via `ecall`. But we run with `-bios none` — there is no OpenSBI.
-Our own `entry.S` *is* the M-mode code.
+On our QEMU, S-mode *could* do both reads and writes to CLINT directly
+(PMP and page table allow it). But on real hardware, firmware
+configures PMP to restrict dangerous writes:
 
-> **How OpenSBI is structured:** OpenSBI is primarily written in C, with
-> a thin assembly entry layer. When an ecall arrives, the assembly saves
-> registers onto an M-mode stack, then calls `sbi_trap_handler()` (a C
-> function) which dispatches by extension ID (a7) to the appropriate
-> handler (e.g., `sbi_timer_set()` writes mtimecmp). OpenSBI can use C
-> because it sets up its own M-mode stack, has its own memory region
-> (protected by PMP from S-mode), and runs a full C runtime. It's
-> essentially a small firmware OS.
->
-> Our M-mode handler is ~20 instructions total — writing it in C would
-> mean setting up a separate M-mode C stack and call frame, which is more
-> overhead than the actual work. At our scale, pure assembly is simpler.
->
-> **The full picture — what runs where:**
->
-> ```
-> S-mode (kernel .text, kernel stack):           M-mode (m_vec.S, no stack):
-> ┌────────────────────────────────────┐         ┌──────────────────────────────┐
-> │ scheduler()                        │         │                              │
-> │   → sbi_set_timer(deadline)        │         │                              │
-> │       li  a7, SBI_SET_TIMER        │         │                              │
-> │       ecall ──────────────────────────────>  │ m_vec:                       │
-> │                                    │         │   csrr mcause → ecall from S │
-> │       (blocked until mret)         │         │   read a7 → SBI_SET_TIMER    │
-> │                                    │         │   write a0 to mtimecmp       │
-> │       ret  <──────────────────────────────   │   mepc += 4                  │
-> │   (continues in scheduler)         │         │   mret ─────────────────>    │
-> └────────────────────────────────────┘         └──────────────────────────────┘
-> ```
->
-> The S-mode wrapper (`sbi.S`) is a normal kernel function — linked in
-> the kernel `.text`, runs on the kernel stack, called by the scheduler.
-> It just loads registers and does `ecall`. The M-mode handler
-> (`m_vec.S`) receives the trap, does the work in registers only (no
-> stack, uses `mscratch` for saves), and `mret` back. Two different
-> files, two different privilege levels, two different memory contexts.
+| Access | Real firmware allows S-mode? | Why |
+|--------|------------------------------|-----|
+| Read `mtime` | Yes | Harmless counter; blocking forces every time query through ecall |
+| Write `mtimecmp` | No — SBI ecall only | Controls when interrupts fire; buggy kernel could hang the system |
+| Write shutdown device | No — SBI ecall only | Could halt the machine unexpectedly |
+| Read `mtimecmp` | Usually yes | Just seeing the current deadline, harmless |
 
-So we write our own **mini-SBI**: S-mode issues `ecall`, which traps
-into M-mode (`mcause = 9`, environment call from S-mode). Our M-mode
-handler dispatches on `a7` and performs the operation:
+We follow this model for portability and learning:
+- **`read_mtime()`** — direct MMIO read from S-mode (one `ld`
+  instruction, no ecall overhead)
+- **`sbi_set_timer(deadline)`** — ecall to M-mode, which writes
+  `mtimecmp`
+- **`sbi_shutdown()`** — ecall to M-mode, which writes the QEMU
+  shutdown device
+
+### Our mini-SBI
+
+On real RISC-V systems, firmware (OpenSBI) provides SBI services. We
+run with `-bios none` — there is no OpenSBI. Our own `entry.S` *is*
+the M-mode code. So we write our own **mini-SBI**: S-mode issues
+`ecall`, which traps into M-mode (`mcause = 9`). Our handler dispatches
+on `a7`:
 
 ```asm
-// S-mode wrapper (sbi.S) — what we use:
-sbi_set_timer:          // a0 = deadline (already in place per calling convention)
+// S-mode wrapper (sbi.S) — normal kernel function, linked in kernel .text:
+sbi_set_timer:          // a0 = deadline (caller put it there per convention)
     li  a7, SBI_SET_TIMER
     ecall
     ret
 ```
 
-> **Alternative: C with inline asm (what OpenSBI-consuming kernels do):**
+```
+S-mode (kernel .text, kernel stack):           M-mode (m_vec.S, no stack):
++------------------------------------+         +------------------------------+
+| scheduler()                        |         |                              |
+|   -> sbi_set_timer(deadline)       |         |                              |
+|       li  a7, SBI_SET_TIMER        |         |                              |
+|       ecall --------------------------->     | m_vec:                       |
+|                                    |         |   csrr mcause -> ecall from S|
+|       (blocked until mret)         |         |   read a7 -> SBI_SET_TIMER   |
+|                                    |         |   write a0 to mtimecmp       |
+|       ret  <-----------------------------    |   mepc += 4                  |
+|   (continues in scheduler)         |         |   mret --------------------> |
++------------------------------------+         +------------------------------+
+```
+
+M-mode writes `deadline` to `mtimecmp`, advances `mepc` past the
+`ecall` instruction (+4 bytes), and `mret` back to S-mode.
+
+> **How OpenSBI compares:** OpenSBI is primarily C with a thin assembly
+> entry. It has its own M-mode stack, own memory region (PMP-protected
+> from S-mode), and a full C runtime — essentially a small firmware OS.
+> Our handler is ~20 instructions total; writing it in C would require
+> setting up a separate M-mode stack and call frame — more overhead than
+> the actual work.
+
+> **Alternative S-mode wrapper in C (what Linux does):**
 >
 > ```c
 > void sbi_set_timer(uint64 deadline) {
@@ -764,66 +774,40 @@ sbi_set_timer:          // a0 = deadline (already in place per calling conventio
 > }
 > ```
 >
-> The `register ... asm("a0")` syntax is a GCC extension: it pins a C
-> variable to a specific hardware register. `= deadline` puts the value
-> there. The `asm volatile("ecall" : : "r"(a0), "r"(a7))` tells the
-> compiler "when you emit the ecall instruction, a0 and a7 must hold
-> these values." We use the assembly version instead because it's
-> three instructions doing three instructions of work — no syntactic
+> `register ... asm("a0")` is a GCC extension that pins a C variable to
+> a specific hardware register. We use the assembly version instead —
+> it's three instructions doing three instructions of work, no syntactic
 > overhead.
 
-```asm
-// M-mode handler in entry.S (currently only handles timer interrupt):
-// We extend it to also handle ecall from S-mode:
-m_trap_vec:
-    csrr  t0, mcause
-    // mcause == 7: machine timer interrupt → handle tick (existing code)
-    // mcause == 9: ecall from S-mode → dispatch on a7:
-    //   a7 == SBI_SET_TIMER → write a0 to mtimecmp, mret
-```
+### Preview: same pattern at the next privilege boundary
 
-M-mode writes `deadline` to `mtimecmp`, advances `mepc` past the
-`ecall` instruction (+4 bytes), and `mret` back to S-mode.
-
-This is the same pattern as user→kernel syscalls (Phase 6), just one
-privilege level lower:
+This ecall mechanism is identical to user→kernel syscalls (Phase 6),
+just one privilege level lower:
 
 | | Round 5-1 (S → M) | Phase 6 (U → S) |
 |--|--|--|
 | Instruction | `ecall` from S-mode | `ecall` from U-mode |
-| Traps to | M-mode (`m_trap.S`) | S-mode (`kernel_vec.S`) |
+| Traps to | M-mode (`m_vec.S`) | S-mode (`kernel_vec.S`) |
 | mcause / scause | 9 (env call from S) | 8 (env call from U) |
 | Dispatch on | `a7` (function ID) | `a7` (syscall number) |
 | Returns via | `mret` | `sret` |
-| First use case | `set_timer` | `exit`, `write`, `fork` |
+| First use case | `set_timer`, `shutdown` | `exit`, `write`, `fork` |
 
-Same mechanism, different privilege boundary. By the time we build user
-syscalls, you'll have already written the pattern once.
+By the time we build user syscalls, you'll have already written the
+pattern once.
 
-**We'll use Approach B** because:
-- It teaches the ecall/mret pattern we'll reuse for user syscalls
-- It matches how real RISC-V systems work (S-mode requests services
-  from M-mode via SBI, even if our "SBI" is just a few lines in entry.S)
-- It properly separates concerns: S-mode doesn't need to know CLINT
-  register addresses
-- Even though Approach A works on our QEMU, building the dispatch
-  mechanism is more valuable for learning
-
-The scheduler becomes:
+### The scheduler with timer
 
 ```c
 void
 scheduler(void) {
     struct cpu *c = this_cpu();
     for (;;) {
-        // With idle thread always in queue, pick_next never returns NULL.
         struct proc *p = pick_next();
 
         p->state = PROC_RUNNING;
         c->proc = p;
-        sbi_set_timer(read_mtime() + TIMER_INTERVAL);  // arm one-shot timer
-        // read_mtime() reads CLINT's mtime register via MMIO (same as mtimecmp,
-        // S-mode can access it directly since our PMP is wide open)
+        sbi_set_timer(read_mtime() + TIMER_INTERVAL);  // arm one-shot
 
         swtch(&c->scheduler, &p->context);
         c->proc = NULL;
@@ -831,8 +815,9 @@ scheduler(void) {
 }
 ```
 
-Each process is guaranteed `TIMER_INTERVAL` of runtime from the moment
-it starts executing.
+`read_mtime()` is a direct MMIO read (fast, no ecall). `sbi_set_timer`
+goes through ecall to M-mode (which writes `mtimecmp`). Each process is
+guaranteed `TIMER_INTERVAL` of runtime from the moment it starts.
 
 ### Why not handle scheduling entirely in M-mode?
 

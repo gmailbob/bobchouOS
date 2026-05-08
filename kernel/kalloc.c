@@ -100,6 +100,11 @@ buddy_alloc(uint32 order) {
         free_areas[i].nr_free++;
     }
 
+    /* Zero on alloc: page table pages need all PTEs to start invalid (V=0).
+     * A stale non-zero PTE with V set would create phantom mappings.
+     * Linux's alloc_pages does NOT zero — callers use get_zeroed_page()
+     * when needed. We always zero for safety since page tables are our
+     * primary consumer. */
     memset(b, 0, PG_SIZE << order);
     struct page *pg = pa_to_page((uint64)b);
     pg->order = order;

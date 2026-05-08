@@ -1079,6 +1079,10 @@ assembler handles the details.
 | `nop` | `addi zero, zero, 0` | Do nothing |
 | `beqz rs, label` | `beq rs, zero, label` | Branch if zero |
 | `bnez rs, label` | `bne rs, zero, label` | Branch if not zero |
+| `bltz rs, label` | `blt rs, zero, label` | Branch if < 0 (bit 63 set) |
+| `bgez rs, label` | `bge rs, zero, label` | Branch if >= 0 (bit 63 clear) |
+| `blez rs, label` | `bge zero, rs, label` | Branch if <= 0 |
+| `bgtz rs, label` | `blt zero, rs, label` | Branch if > 0 |
 | `seqz rd, rs` | `sltiu rd, rs, 1` | Set if equal to zero |
 | `snez rd, rs` | `sltu rd, zero, rs` | Set if not zero |
 

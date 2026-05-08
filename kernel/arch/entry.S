@@ -22,6 +22,7 @@
 
 .section .text.entry
 .global _start
+.global park
 
 _start:
     # ---- Step 1: Hart parking ----
@@ -58,8 +59,9 @@ bss_done:
 
     # ---- Step 7: Delegate traps to S-mode ----
     li    t0, 0xffff
-    csrw  medeleg, t0             # S-mode handles its own exceptions
     csrw  mideleg, t0             # S-mode handles its own interrupts
+    andi  t0, t0, ~MEDELEG_ECALL_S
+    csrw  medeleg, t0             # S-mode handles its own exceptions, except ecall
 
     # ---- Step 8: Configure PMP ----
     li    t0, PMP_NAPOT_ALL
