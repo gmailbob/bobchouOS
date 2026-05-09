@@ -26,6 +26,18 @@ static DEFINE_HASHTABLE(pid_table, PID_HASH_BITS);
 static struct cpu cpus[1];
 static int next_pid = 0;
 
+/* --- Interrupt enable/disable helpers --- */
+
+static inline void
+intr_on(void) {
+    csrw(sstatus, csrr(sstatus) | SSTATUS_SIE);
+}
+
+static inline void
+intr_off(void) {
+    csrw(sstatus, csrr(sstatus) & ~SSTATUS_SIE);
+}
+
 /* --- PID allocation --- */
 
 static int
@@ -37,28 +49,27 @@ alloc_pid(void) {
 
 struct cpu *
 this_cpu(void) {
-    /* (Single hart — later this reads tp to index cpus[].) */
-    return &cpus[0];
+    return &cpus[0]; /* single hart; later reads tp to index cpus[] */
 }
 
 struct proc *
 this_proc(void) {
-    /* should be called from context where a process must be running. */
-    if (this_cpu()->proc)
-        return this_cpu()->proc;
-    panic("this_proc: NULL");
+    struct proc *p = this_cpu()->proc;
+    if (p)
+        return p;
+    panic("this_proc: no current process");
 }
 
 /* --- Scheduler --- */
 
 /*
- * pick_next — remove and return the first process from the run queue.
- * With the idle thread always present, this should never return NULL.
+ * pick_next — pop the first process from the run queue.
+ * With idle always present, this should never return NULL.
  */
 static struct proc *
 pick_next(void) {
     if (list_empty(&run_queue))
-        return NULL;
+        panic("pick_next: run queue empty");
 
     struct proc *p = list_first_entry(&run_queue, struct proc, run_list);
     list_del(&p->run_list);
@@ -66,9 +77,9 @@ pick_next(void) {
 }
 
 /*
- * scheduler — the main scheduling loop. Never returns.
- * Called as the last thing kmain() does. The boot stack becomes the
- * scheduler's permanent stack.
+ * scheduler — main scheduling loop (never returns).
+ * Called as the last thing kmain() does; the boot stack becomes
+ * the scheduler's permanent stack.
  */
 void
 scheduler(void) {
@@ -77,17 +88,15 @@ scheduler(void) {
         struct proc *p = pick_next();
         p->state = PROC_RUNNING;
         c->proc = p;
-        kprintf("scheduler picked %s\n", p->name);
         sbi_set_timer(read_mtime() + TIMER_INTERVAL);
-        kprintf("scheduler set timer %d\n", read_mtime() + TIMER_INTERVAL);
-        swtch(&c->scheduler, &p->context); // when p yields, go to next line (instruction)
+        swtch(&c->scheduler, &p->context);
         c->proc = NULL;
     }
 }
 
 /*
  * yield — voluntarily give up the CPU.
- * Marks current process RUNNABLE, pushes it to the run queue tail,
+ * Marks current process RUNNABLE, pushes to run queue tail,
  * and switches back to the scheduler.
  */
 void
@@ -103,20 +112,23 @@ yield(void) {
 /*
  * proc_create_kernel — create a new kernel thread.
  *
- * Allocates a proc via kmalloc, assigns a PID, allocates a kernel stack,
- * sets up context so that swtch "returns" into fn, and adds the proc
- * to the run queue, all-procs list, and PID hash table.
+ * Allocates proc via kmalloc, assigns PID, allocates kernel stack,
+ * sets up context so swtch "returns" into fn, and adds proc to
+ * run queue, all-procs list, and PID hash table.
  */
 struct proc *
 proc_create_kernel(void (*fn)(void), const char *name) {
     struct proc *p = kmalloc(sizeof(struct proc));
-    memset(p, 0, sizeof(struct proc)); // in our design kmalloc is not zeroed
+    memset(p, 0, sizeof(struct proc)); /* kmalloc does not zero */
 
     p->pid = alloc_pid();
-    memcpy(p->name, name, PROC_NAME_LEN);
+    for (int i = 0; i < PROC_NAME_LEN - 1 && name[i]; i++)
+        p->name[i] = name[i]; /* null-terminated: memset zeroed the rest */
     p->kstack = (uint64)kalloc();
+    if (!p->kstack)
+        panic("proc_create_kernel: kalloc failed");
     p->context.ra = (uint64)fn;
-    p->context.sp = p->kstack + PG_SIZE; // top of stack, grows down
+    p->context.sp = p->kstack + PG_SIZE; /* top of stack (grows down) */
     p->state = PROC_RUNNABLE;
     list_add_tail(&p->all_list, &all_procs);
     list_add_tail(&p->run_list, &run_queue);
@@ -137,14 +149,11 @@ proc_init(void) {
     memset(&cpus[0], 0, sizeof(struct cpu));
 }
 
-/* --- Idle thread --- */
+/* --- Idle thread (PID 0) --- */
 
-/*
- * idle_thread — the idle process (PID 0). Runs when no other process
- * is runnable. Halts the hart until an interrupt arrives.
- */
 void
 idle_thread(void) {
+    intr_on(); /* new threads start with SIE=0; enable for timer preemption */
     for (;;) {
         asm volatile("wfi");
         yield();
@@ -155,15 +164,16 @@ idle_thread(void) {
 
 void
 worker(void) {
+    intr_on();
     int count = 0;
     for (;;) {
         count++;
-        if (count % 1000000 == 0)
-            kprintf("[%s] %d\n", this_proc()->name, count / 1000000);
-        // if (count % 23000000 == 0) {
-        //     kprintf("[%s] self-yield\n", this_proc()->name);
-        //     yield();
-        // }
+        if (count % 1000000 == 0) {
+            intr_off(); /* kprintf is not reentrant */
+            kprintf("[%s] pid=%d count=%d\n",
+                    this_proc()->name, this_proc()->pid, count / 1000000);
+            intr_on();
+        }
         if (count >= 100000000)
             count = 0;
     }

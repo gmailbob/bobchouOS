@@ -37,9 +37,9 @@ kmain(void) {
     csrw(stvec, (uint64)kernel_vec);
 
     /* Enable S-mode software interrupt (SSIP) — this is how M-mode
-     * forwards timer events to us. */
+     * forwards timer events to us. SIE is left disabled here; each
+     * kernel thread enables it via intr_on() at its start. */
     csrw(sie, csrr(sie) | SIE_SSIE);
-    csrw(sstatus, csrr(sstatus) | SSTATUS_SIE);
 
     kprintf("\nbobchouOS is booting...\n");
     kprintf("kernel: %p .. %p (%d bytes)\n", _kernel_start, _kernel_end,

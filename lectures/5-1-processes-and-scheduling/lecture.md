@@ -796,6 +796,28 @@ just one privilege level lower:
 By the time we build user syscalls, you'll have already written the
 pattern once.
 
+> **Dispatch styles:** Our M-mode handler uses cascading `beq`
+> comparisons (check a7 against each function ID). This is fine for 2
+> functions. With more cases, you'd use a **jump table** — an array of
+> addresses indexed by function number:
+>
+> ```asm
+> la    t0, sbi_table
+> slli  t1, a7, 3         # index × 8 (each entry is an address)
+> add   t0, t0, t1
+> ld    t0, 0(t0)         # load handler address
+> jr    t0                # jump
+>
+> sbi_table:
+>     .quad m_set_timer   # a7=0
+>     .quad m_shutdown    # a7=1
+> ```
+>
+> For Phase 6 user syscalls (dozens of handlers), we'll use a C function
+> pointer array instead — same concept (indexed dispatch), but in C
+> where it's easier to maintain:
+> `static int (*syscalls[])(void) = { [SYS_exit] = sys_exit, ... };`
+
 ### The scheduler with timer
 
 ```c
@@ -1024,6 +1046,364 @@ coexist, PID table is populated, idle thread runs when others yield.
 
 ---
 
+## Part 7: Debugging the Timer Preemption Bug
+
+This section documents the bugs encountered when implementing timer-driven
+preemption and the reasoning behind each fix. The issues are subtle
+consequences of calling `yield()` inside a trap handler — a design choice
+we share with xv6, but which creates pitfalls that aren't obvious from the
+lecture's high-level description.
+
+### Background: process switch inside a trap
+
+To understand the bugs, we must first trace exactly what happens when a
+process is preempted by the timer. The key insight: `sret` DOES run —
+just not immediately. The trap frame is frozen mid-execution while other
+processes run.
+
+**Full trace of timer preemption:**
+
+```
+Process A running
+  → timer fires
+  → CPU jumps to kernel_vec.S (stvec)
+  → kernel_vec saves all regs on A's kernel stack
+  → call kernel_trap()
+    → kernel_trap detects IRQ_S_SOFT
+    → clears SSIP
+    → calls yield()
+      → yield calls swtch(&A.context, &cpu.scheduler)
+      → *** we leave A's execution here ***
+
+... scheduler runs, picks B, switches to B ...
+... B runs its timeslice, yields back to scheduler ...
+... eventually scheduler picks A again ...
+
+      → swtch returns (back inside yield)
+    → yield returns (back inside kernel_trap)
+  → kernel_trap returns (back inside kernel_vec)
+  → kernel_vec restores all regs
+  → sret ← this runs when A is finally resumed
+```
+
+The `sret` executes — just delayed by however long A was switched out.
+When `yield()` calls `swtch`, we leave A's kernel stack "mid-function."
+The entire call stack is frozen:
+
+```
+A's kernel stack (frozen while A is not running):
+  kernel_vec frame (saved all regs)
+    kernel_trap frame
+      yield frame
+        ← sp is here when swtch saves it into A.context
+```
+
+When A is scheduled again, `swtch` restores this sp, `yield` returns,
+`kernel_trap` returns, `kernel_vec` restores all regs, `sret` jumps
+back to the exact instruction A was running when the timer fired.
+
+This "suspended trap" design is what creates the bugs below.
+
+### Background: stack frames and the frame pointer
+
+To understand Bug 2, we need to know how function calls use the stack.
+(Lecture 0-2, Part 5 showed prologue/epilogue code but didn't name
+the concept explicitly. Here we define it.)
+
+When a function is called, the compiler creates a **stack frame** — a
+region on the stack holding that function's saved registers and local
+variables. Each nested call pushes a new frame; each return pops one:
+
+```
+High address (stack grows downward)
++-------------------------+
+| worker's frame          |  ← worker's sp on entry
+|   saved ra, s0-s11      |
+|   local vars (count)    |
++-------------------------+
+| kprintf's frame         |  ← kprintf's sp on entry
+|   saved ra, ...         |
++-------------------------+
+          ...
+Low address
+```
+
+Two registers manage this:
+
+- **`sp` (x2)** — stack pointer. Points to the current top (lowest
+  used address). Moves on every function call/return.
+- **`s0` / `fp` (x8)** — frame pointer. Points to a fixed location
+  in the current frame. Gives a stable base address for accessing
+  local variables when `sp` moves unpredictably within a function.
+
+  > **When is `sp` unpredictable?** Almost never in kernel code. `sp`
+  > moves by a compile-time constant in the prologue and stays put —
+  > the compiler knows every offset. The rare exceptions: `alloca()`
+  > (allocates on the *stack*, not heap like `malloc`) and C99
+  > variable-length arrays (`int arr[n]` with runtime `n` — added in
+  > C99, made optional in C11, banned in the Linux kernel, and avoided
+  > in most professional C code due to silent stack overflow risk and
+  > poor portability across compilers). In our kernel, `sp` is always
+  > deterministic.
+  >
+  > Since `sp` is deterministic, **`-O2` eliminates the frame pointer
+  > entirely** — the compiler tracks everything relative to `sp` and
+  > frees `s0` as a general-purpose callee-saved register. This is why
+  > `s0` often holds cached values like `&cpus` in our worker function
+  > rather than serving as a frame pointer.
+
+The compiler's function prologue typically does:
+
+```asm
+addi  sp, sp, -N       # allocate frame (N bytes)
+sd    ra, (N-8)(sp)    # save return address
+sd    s0, (N-16)(sp)   # save caller's frame pointer
+addi  s0, sp, N        # s0 = base of this frame
+```
+
+And the epilogue reverses it:
+
+```asm
+ld    ra, (N-8)(sp)    # restore return address
+ld    s0, (N-16)(sp)   # restore caller's frame pointer
+addi  sp, sp, N        # deallocate frame
+ret
+```
+
+The key point for Bug 2: **each function overwrites `s0` with its own
+frame pointer.** This is safe normally because `s0` is callee-saved —
+each function saves the old value in its prologue and restores it in
+its epilogue. But if we bypass the epilogue (via `swtch`), the old `s0`
+is lost unless we saved it elsewhere (kernel_vec's stack frame).
+
+### Bug 1: Process never gets preempted
+
+**Symptom:** Worker A runs forever. Timer is armed by the scheduler, but
+worker A never yields — it prints hundreds of lines without interruption.
+
+**Root cause:** When a trap fires, hardware sets `SIE = 0` (disabling
+further interrupts). Normally `sret` restores SIE from SPIE. But we
+leave the trap via `swtch` instead of `sret` — so SIE stays 0. The
+next process inherits this disabled state.
+
+**Trace:**
+
+```
+kmain sets SIE = 1
+  → scheduler picks idle → swtch to idle
+  → idle: wfi → timer fires
+  → hardware: SPIE = SIE(1), SIE = 0   ← interrupts disabled
+  → kernel_vec → kernel_trap → yield → swtch to scheduler
+    (SIE is still 0 — we left via swtch, not sret)
+  → scheduler picks worker_a → swtch to worker_a
+  → worker_a runs with SIE=0
+  → timer fires in M-mode, SSIP is set, but S-mode never takes
+    the interrupt because SIE=0!
+```
+
+The `sret` that would restore SIE is frozen on idle's stack — it won't
+run until idle is scheduled again.
+
+**Fix:** Each kernel thread enables interrupts at its start:
+
+```c
+void worker(void) {
+    intr_on();  /* SIE = 1 */
+    ...
+}
+```
+
+New threads enter via `swtch → ret` (not via `sret`), so there's no
+hardware mechanism to restore SIE. They must do it manually. Once a
+thread has been preempted and later resumes, the full path runs:
+`swtch → yield returns → kernel_trap returns → kernel_vec → sret`
+— and `sret` restores SIE from SPIE (which was 1 when the trap was
+originally taken). So the manual `intr_on()` is only needed once, at
+the very first entry.
+
+### Bug 2: Callee-saved registers corrupted after preemption
+
+**Symptom:** After the timer preempts a process and it resumes, register
+`s0` (which the compiler uses to hold `&cpus`) is 0 → NULL dereference
+→ page fault.
+
+**Root cause:** `kernel_vec.S` originally only saved **caller-saved**
+registers (ra, t0-t6, a0-a7). The reasoning was: "kernel_trap is a
+normal C function, it preserves s0-s11 per the calling convention."
+
+This was correct before scheduling existed. But now `kernel_trap` calls
+`yield()` → `swtch()`, which switches to another process. The other
+process runs with its own s0-s11 values. When we eventually switch back,
+`swtch` restores s0-s11 from context — but these are the values from
+inside `yield()` (kernel_trap's frame pointer, etc.), NOT the worker's
+original s0-s11.
+
+**Trace of the corruption:**
+
+```
+Worker running: s0 = &cpus (compiler cached this address in s0)
+  → timer fires
+  → kernel_vec saves ONLY caller-saved regs (s0 NOT saved to stack!)
+  → kernel_trap prologue: saves old s0, sets s0 = its own frame pointer
+  → kernel_trap body runs (s0 = kernel_trap's fp, NOT &cpus)
+  → yield → swtch: saves s0 into context (= kernel_trap's fp)
+  → ... other process runs ...
+  → swtch back: restores s0 from context (= kernel_trap's fp)
+  → yield returns → kernel_trap epilogue restores s0...
+    BUT restores to what? kernel_trap saved the s0 it received from
+    its caller (kernel_vec). kernel_vec set s0? No — kernel_vec is
+    assembly, it didn't touch s0. So kernel_trap's saved s0 is
+    whatever s0 was on trap entry = &cpus. Epilogue restores it...
+
+    Wait — actually this SHOULD work? Let's look more carefully.
+```
+
+The subtlety: `kernel_trap`'s prologue saves the s0 it received (which
+is the worker's `&cpus`, passed through from kernel_vec). Its epilogue
+restores it. So after `kernel_trap` returns, s0 = &cpus again — IF the
+function returns normally.
+
+But with `swtch` in the middle: `kernel_trap` calls `yield()`, which
+calls `swtch`. `swtch` saves s0 — at this point s0 is `yield()`'s
+frame pointer (which `yield` set in its own prologue). When we resume
+via swtch, s0 is restored to yield's fp. Yield returns to kernel_trap.
+kernel_trap's epilogue restores s0 from *its* stack frame — which holds
+the original &cpus. Then kernel_trap returns to kernel_vec.
+
+So the callee-save chain *does* properly unwind... UNLESS another
+process's `swtch` restores different s0-s11 values and then those leak
+into our kernel_vec frame. Let's trace what happens to kernel_vec's
+caller-saved-only approach:
+
+```
+Worker: s0 = &cpus
+  → timer fires
+  → kernel_vec: saves ra, t0-t6, a0-a7 to stack. Does NOT save s0.
+  → call kernel_trap
+  → kernel_trap prologue: sd s0, N(sp)  ← saves &cpus to ITS frame
+  → kernel_trap sets s0 = its own frame pointer
+  → calls yield() → yield sets s0 = yield's frame pointer
+  → swtch(&A.context, &scheduler): saves s0 = yield's fp into A.context
+
+  ... scheduler picks process B ...
+  ... B runs, eventually yields ...
+
+  → swtch(&scheduler, &A.context): restores s0 = yield's fp (correct!)
+  → yield epilogue: restores s0 from yield's stack = kernel_trap's fp
+  → kernel_trap epilogue: restores s0 from kernel_trap's stack = &cpus ✓
+  → kernel_trap returns to kernel_vec
+  → kernel_vec: does NOT restore s0 (didn't save it)
+  → sret: s0 = &cpus ← THIS SHOULD WORK!
+```
+
+Hmm — the chain seems correct. But in practice it crashed. Why?
+
+The issue is **compiler optimization**: with `-O2`, the compiler may NOT
+use a frame pointer. Instead, it accesses locals relative to `sp` only.
+`s0` becomes just another callee-saved register used for arbitrary
+purposes (like caching `&cpus`). When `kernel_trap` is compiled without
+a frame pointer, it might use s0 for something else entirely (a loop
+variable, a temporary) and not save/restore it if the compiler proves
+it's not needed across the call to `yield`.
+
+More precisely: the compiler sees that `kernel_trap` calls `yield()`
+which calls `swtch` (an external assembly function). `swtch` is declared
+to save/restore s0-s11 — so from the compiler's perspective, s0 is
+preserved across the `yield()` call. The compiler trusts that. But
+`swtch` saves s0 into one process's context and restores s0 from a
+DIFFERENT process's context — the compiler doesn't know this.
+
+The result: kernel_trap might skip saving s0 to its stack frame because
+it "knows" yield/swtch preserves it. But swtch swaps it with another
+process's value. When kernel_trap returns, s0 has the wrong value.
+kernel_vec doesn't save/restore s0 either. Crash.
+
+**Fix:** `kernel_vec.S` must save ALL general-purpose registers (including
+s0-s11). This makes the save/restore independent of what the compiler
+decides to do with callee-saved registers inside kernel_trap:
+
+```
+kernel_vec saves ALL regs (including s0 = &cpus) to stack
+  → kernel_trap runs (may or may not save s0 to its own frame)
+  → yield → swtch → other process → swtch back
+  → kernel_trap returns (s0 = unknown/wrong value)
+kernel_vec restores ALL regs from stack (s0 = &cpus — correct!)
+  → sret
+```
+
+kernel_vec's save is the **authoritative copy** of the worker's register
+state. Whatever happens between save and restore — function calls,
+context switches, compiler optimizations — doesn't matter. The stack
+frame captures the exact moment of interruption.
+
+### Bug 3: kprintf corruption under preemption
+
+**Symptom:** With bugs 1 and 2 fixed, timer preemption works — processes
+interleave. But after a few switches, output shows `[] 0` (empty name,
+zero count) and eventually crashes with a page fault at a small
+non-zero address (corrupted struct pointer).
+
+**Root cause:** `kprintf` is not reentrant. It uses shared state
+internally (format string parsing position, output buffer pointer). When
+the timer fires mid-kprintf (process A is halfway through printing),
+the scheduler switches to process B, which also calls kprintf. Both
+processes are now interleaving inside the same kprintf instance,
+corrupting each other's state.
+
+**Trace:**
+
+```
+Worker A: kprintf("[worker_a] pid=1 co
+  → timer fires mid-print
+  → kernel_vec → kernel_trap → yield → scheduler → worker B
+Worker B: kprintf("[worker_b] pid=2 count=1\n")
+  → this completes, but kprintf's internal state was left
+    mid-string by A — B's output may be garbled, and A's
+    saved format pointer is now stale
+  → timer fires → scheduler → worker A resumes
+Worker A: ...unt=1\n") — but internal state is corrupted
+  → reads from wrong address → page fault
+```
+
+**Fix:** Disable interrupts around kprintf calls:
+
+```c
+if (count % 1000000 == 0) {
+    intr_off();
+    kprintf("[%s] pid=%d count=%d\n", ...);
+    intr_on();
+}
+```
+
+This ensures the timer cannot preempt a process mid-print. The timeslice
+may be slightly extended (by the duration of one print), but correctness
+is guaranteed. This is the same approach Linux uses — `printk` acquires
+a console lock that prevents preemption during output.
+
+### Summary: lessons from the bugs
+
+| Bug | Cause | Category |
+|-----|-------|----------|
+| No preemption | SIE=0 inherited from frozen trap | yield-inside-trap side effect |
+| s0 corruption | kernel_vec didn't save callee-saved regs | yield-inside-trap side effect |
+| kprintf crash | Non-reentrant code preempted mid-execution | Missing critical section |
+
+All three stem from the same architectural choice: **calling yield()
+inside the trap handler.** The trap frame is "suspended" mid-execution
+while other processes run, creating:
+- Register state that the normal return path (`sret`) would have
+  restored, but `swtch` bypasses
+- Shared code (kprintf) that assumes single-threaded execution,
+  violated by preemption
+
+Production OSes (Linux, FreeBSD, Windows) avoid these issues by
+deferring scheduling: the trap handler just sets a `need_resched`
+flag and returns via `sret` (which properly restores all state). The
+actual context switch happens later at a well-defined scheduling point.
+xv6 (and we) accept the complexity for simplicity of implementation.
+
+---
+
 ## Quick Reference
 
 ### Process states (Round 5-1)
@@ -1044,6 +1424,7 @@ coexist, PID table is populated, idle thread runs when others yield.
 | `swtch(old, new)` | Save 14 regs to old, restore from new, ret |
 | `this_cpu()` | Return current hart's `struct cpu` |
 | `this_proc()` | Return currently running process |
+| `intr_on()` / `intr_off()` | Enable/disable S-mode interrupts (SIE bit) |
 
 ### `struct context` layout (byte offsets)
 

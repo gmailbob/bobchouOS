@@ -56,22 +56,14 @@
 /* ---- medeleg bits ---- */
 #define MEDELEG_ECALL_S     (_UL(1) << 9)
 
-/* ---- mcause ---- */
-/* Interrupt cause codes (mcause value when bit 63 = 1) */
-#define IRQ_M_TIMER         7
-
-/* Exception cause codes (mcause value when bit 63 = 0) */
-#define EXC_ECALL_S         9
-
-/* ---- scause ---- */
+/* ---- Interrupt cause codes (bit 63 = 1) ---- */
 #define SCAUSE_INTERRUPT    (_UL(1) << 63)
+#define IRQ_S_SOFT          1               /* supervisor software (SSIP) */
+#define IRQ_S_TIMER         5               /* supervisor timer */
+#define IRQ_S_EXT           9               /* supervisor external (PLIC) */
+#define IRQ_M_TIMER         7               /* machine timer */
 
-/* Interrupt cause codes (scause value when bit 63 = 1) */
-#define IRQ_S_SOFT          1
-#define IRQ_S_TIMER         5
-#define IRQ_S_EXT           9
-
-/* Exception cause codes (scause value when bit 63 = 0) */
+/* ---- Exception cause codes (bit 63 = 0, same for mcause and scause) ---- */
 #define EXC_INST_MISALIGN   0
 #define EXC_INST_ACCESS     1
 #define EXC_ILLEGAL_INST    2
@@ -81,6 +73,7 @@
 #define EXC_STORE_MISALIGN  6
 #define EXC_STORE_ACCESS    7
 #define EXC_ECALL_U         8
+#define EXC_ECALL_S         9
 #define EXC_INST_PAGE       12
 #define EXC_LOAD_PAGE       13
 #define EXC_STORE_PAGE      15

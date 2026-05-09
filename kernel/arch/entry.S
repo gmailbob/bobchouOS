@@ -60,7 +60,7 @@ bss_done:
     # ---- Step 7: Delegate traps to S-mode ----
     li    t0, 0xffff
     csrw  mideleg, t0             # S-mode handles its own interrupts
-    andi  t0, t0, ~MEDELEG_ECALL_S
+    andi  t0, t0, ~MEDELEG_ECALL_S # clear bit 9; ~(1<<9) = -513, fits in 12-bit signed imm
     csrw  medeleg, t0             # S-mode handles its own exceptions, except ecall
 
     # ---- Step 8: Configure PMP ----
