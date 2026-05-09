@@ -70,9 +70,10 @@ Rust's safety guarantees get more valuable as you move up from hardware. Closer 
 
 ### Phase 0 — Tooling & C Fundamentals
 
-- Install the RISC-V cross-compiler toolchain (`riscv64-unknown-elf-gcc`)
+- Install the RISC-V cross-compiler toolchain (`riscv-none-elf-gcc`)
 - Install QEMU with RISC-V support (`qemu-system-riscv64`)
 - Refresh C fundamentals: pointers, structs, manual memory management, bitwise operations, the preprocessor
+- Refresh RISC-V assembly: registers, calling convention, basic instructions
 - Write a bare-metal "hello world" that outputs to UART on QEMU — proving the toolchain works end to end
 - Set up GDB with QEMU (`-s -S` flags) and practice stepping through code
 
@@ -89,16 +90,17 @@ Rust's safety guarantees get more valuable as you move up from hardware. Closer 
 ### Phase 2 — RISC-V Privilege Levels & Traps
 
 - Understand RISC-V privilege modes: Machine (M), Supervisor (S), User (U)
-- Switch from M-mode to S-mode at boot
+- Switch from M-mode to S-mode at boot (mstatus, mepc, mret)
+- Configure PMP for S-mode access to all physical memory
 - Set up the trap vector (`stvec`) and write a trap handler (assembly stub → C dispatcher)
-- Handle timer interrupts via the CLINT (periodic tick)
-- Handle basic exceptions (illegal instruction, page fault) — print diagnostics and halt
+- Handle timer interrupts via the CLINT
+- Handle basic exceptions (illegal instruction, page fault, breakpoint) — print diagnostics and halt
 
-> **Milestone:** the kernel handles timer interrupts and prints "tick" periodically.
+> **Milestone:** the kernel handles timer interrupts and exceptions cleanly.
 
 ### Phase 3 — Physical Memory Management
 
-- Detect available RAM (from device tree or hardcoded for the `virt` machine)
+- Detect available RAM (hardcoded for QEMU `virt`: 0x80000000–0x88000000)
 - Implement a page allocator: free list of 4KB pages (`kalloc()` / `kfree()`)
 - Test allocation and deallocation before building on top of it
 
@@ -115,50 +117,72 @@ Rust's safety guarantees get more valuable as you move up from hardware. Closer 
 ### Phase 5 — Processes & Scheduling
 
 - Define `struct proc` — PID, state, kernel stack, page table, trapframe, context
+- Implement intrusive data structures for process management (linked lists, hash table)
 - Create the first process by hand (hardcoded function as its "program")
 - Implement `swtch()` — assembly routine to save/restore callee-saved registers for context switching
 - Implement a round-robin scheduler driven by timer interrupts
 - Run two processes that print to UART and observe interleaved output
-- Implement `fork()`, `exit()`, and `wait()`
+- Implement spinlocks and sleep/wakeup synchronization primitives
+- Implement `fork()`, `exit()`, `wait()`, and `kill()`
 
-> **Milestone:** multiple processes running concurrently with preemptive scheduling.
+> **Milestone:** multiple processes running concurrently with preemptive scheduling; full process lifecycle (fork, run, exit, reap).
 
 ### Phase 6 — User Mode & System Calls
 
 - Set up per-process user-mode page tables (separate address spaces)
+- Implement trampoline page and trapframe for user↔kernel transitions
 - Transition processes from S-mode to U-mode via `sret`
 - Implement the `ecall` syscall mechanism (trap into kernel, dispatch by syscall number, return)
-- Implement core syscalls: `write()`, `exit()`, `fork()`, `exec()`
+- Implement core syscalls: `write()`, `exit()`, `fork()`, `exec()`, `wait()`, `sbrk()`
 - Write a simple ELF loader for `exec()`
+- Implement copy-on-write fork and lazy allocation (page faults as a feature)
 
-> **Milestone:** user-mode programs making system calls to the kernel.
+> **Milestone:** user-mode programs making system calls to the kernel; fork+exec works.
 
 ### Phase 7 — File System
 
 - Implement a virtio block device driver (QEMU `virt` machine's virtio-blk)
-- Implement a buffer cache (LRU cache of disk blocks)
+- Implement a buffer cache (LRU cache of disk blocks, sleep-locks)
+- Implement write-ahead logging for crash recovery
 - Design an on-disk format: superblock, inodes, free bitmap, data blocks
 - Implement directories and path resolution (`namei`)
-- Implement file syscalls: `open()`, `read()`, `write()`, `close()` with file descriptors
+- Implement file syscalls: `open()`, `read()`, `write()`, `close()`, `fstat()`, `dup()`, `link()`, `unlink()` with file descriptors
 - Write `mkfs` — a host-side tool to create a filesystem image
+
+> **Milestone:** format a disk image, create/read/write files via syscalls.
 
 ### Phase 8 — Shell & Userspace
 
-- Implement UART input with interrupt-driven buffering
+- Implement interrupt-driven UART input with line buffering
 - Implement `pipe()` for inter-process communication
 - Write a minimal shell: read input, parse commands, fork + exec
-- Implement `dup()` and I/O redirection (`echo hello > file`)
-- Write small userspace programs: `cat`, `echo`, `ls`
+- Implement I/O redirection (`echo hello > file`) and pipes (`cmd1 | cmd2`)
+- Write small userspace programs: `echo`, `cat`, `ls`, `wc`, `grep`
+- Implement a minimal libc (printf, malloc, string functions)
 
 > **Milestone:** boot bobchouOS, get a shell prompt, run commands. The "wow" moment.
 
+### Phase 9 — Concurrency & Multi-core
+
+- Wake secondary harts, implement per-CPU schedulers
+- Fine-grained locking, lock ordering, deadlock prevention
+- Memory barriers and hardware memory ordering
+- Implement user-level threads: `clone()` syscall, futex, user-space mutex/condvar
+
+> **Milestone:** multiple harts running independent processes; user threads with synchronization.
+
 ### Stretch Goals (Time Permitting)
 
-- Networking: virtio-net driver + minimal TCP/IP stack
-- Multi-core support (SMP): per-CPU schedulers, spinlocks
-- A minimal `libc` for userspace programs
-- Port an existing program (e.g., a Lua interpreter)
-- Boot on real RISC-V hardware
+Each is independent — pick any after Phase 9.
+
+| Topic | What it teaches |
+|-------|-----------------|
+| **Demand paging & swap** | Page fault handler loads pages on access; evict to swap under memory pressure. |
+| **mmap** | Memory-mapped files — unifies file I/O and VM. |
+| **Signals** | Asynchronous notification (SIGKILL, SIGCHLD, SIGSEGV). User-space signal handlers. |
+| **Networking** | virtio-net driver → minimal IP/UDP/TCP stack → socket syscall. |
+| **Port a real program** | Lua interpreter or similar — proves the syscall interface is complete. |
+| **Real hardware** | Boot on a physical RISC-V board (VisionFive 2). Device tree parsing. |
 
 ## Estimated Project Timeline
 
@@ -172,15 +196,16 @@ Rust's safety guarantees get more valuable as you move up from hardware. Closer 
 | Phase 5 — Processes & scheduling | ~5 weeks | 23 weeks |
 | Phase 6 — User mode & syscalls | ~4 weeks | 27 weeks |
 | Phase 7 — File system | ~5 weeks | 32 weeks |
-| Phase 8 — Shell & polish | ~4 weeks | 36 weeks |
+| Phase 8 — Shell & userspace | ~4 weeks | 36 weeks |
+| Phase 9 — Concurrency & multi-core | ~4 weeks | 40 weeks |
 
-Total: approximately **36 weeks (~9 months)** of active development at a part-time pace (~8 hours/week), with buffer time built into a 1-2 year horizon for breaks, difficult bugs, and deeper exploration.
+Total: approximately **40 weeks (~10 months)** of active development at a part-time pace (~8 hours/week), with buffer time built into a 1-2 year horizon for breaks, difficult bugs, and deeper exploration.
 
 ## Resources & References
 
 ### Primary Reference
 
-- **[xv6-riscv](https://github.com/mit-pdos/xv6-riscv)** — MIT's teaching OS for RISC-V. ~6,000 lines of C. The single most important reference for this project. Read the relevant section of xv6 before implementing each phase.
+- **[xv6-riscv](https://github.com/mit-pdos/xv6-riscv)** — MIT's teaching OS for RISC-V. ~6,000 lines of C. The single most important reference for this project.
 - **[xv6 Book (RISC-V edition)](https://pdos.csail.mit.edu/6.828/2023/xv6/book-riscv-rev3.pdf)** — Companion textbook explaining xv6's design chapter by chapter.
 
 ### RISC-V Architecture
@@ -199,7 +224,7 @@ Total: approximately **36 weeks (~9 months)** of active development at a part-ti
 
 ### Tutorials & Community
 
-- **[OSDev Wiki](https://wiki.osdev.org)** — Community wiki covering nearly every OS development topic. x86-centric but has growing RISC-V content.
+- **[OSDev Wiki](https://wiki.osdev.org)** — Community wiki covering nearly every OS development topic.
 - **[Brokenthorn OS Dev Series](http://www.brokenthorn.com/Resources/)** — Classic bare-metal OS tutorial (x86, but conceptually transferable).
 - **[Writing an OS in Rust](https://os.phil-opp.com/)** — Not directly used here, but an excellent resource for a future Rust-based OS project.
 
@@ -207,32 +232,33 @@ Total: approximately **36 weeks (~9 months)** of active development at a part-ti
 
 ```
 bobchouOS/
-├── lectures/               # Learning materials and exercises
-│   ├── 0-1-tooling/        #   Toolchain setup + bare-metal hello world
-│   ├── 0-2-.../            #   (future: C recap)
-│   └── 1-1-.../            #   (future: boot & early kernel)
-├── kernel/                 # Kernel source (Phase 1+)
-│   ├── arch/               #   RISC-V specific: entry.S, traps, CSR access
-│   ├── mm/                 #   Memory management: kalloc, vm, kmalloc
-│   ├── proc/               #   Process management: proc, scheduler, swtch
-│   ├── fs/                 #   File system: buffer cache, inodes, directories
-│   ├── drivers/            #   UART, virtio-blk, PLIC, CLINT
-│   ├── syscall/            #   System call dispatch and implementations
-│   └── main.c              #   Kernel entry point
-├── bootloader/             # Minimal M-mode setup (if not using OpenSBI)
-├── userspace/              # User-mode programs (shell, cat, echo, ls)
-├── mkfs/                   # Host tool to build filesystem images
-├── scripts/                # QEMU launch scripts, GDB helpers
-├── Makefile
+├── lectures/               # Learning materials (one per round)
+│   ├── 0-1-tooling/        #   Toolchain setup + bare-metal hello
+│   ├── 0-2-assembly-recap/ #   RISC-V assembly exercises
+│   ├── 0-3-c-recap/        #   C fundamentals exercises
+│   ├── 1-1-boot-and-linker/
+│   ├── ...                 #   (one directory per round)
+│   └── 5-1-processes-and-scheduling/
+├── kernel/                 # Kernel source
+│   ├── arch/               #   RISC-V assembly: entry, traps, context switch
+│   ├── include/            #   All kernel headers
+│   ├── drivers/            #   UART (future: virtio-blk, PLIC)
+│   ├── lib/                #   kprintf, string utilities
+│   ├── test/               #   Unit tests (run via `make test`)
+│   ├── main.c              #   Kernel entry point
+│   ├── proc.c              #   Process management & scheduler
+│   ├── trap.c              #   Trap dispatcher
+│   ├── vm.c                #   Virtual memory
+│   ├── kalloc.c            #   Physical page allocator
+│   └── kmalloc.c           #   Kernel heap allocator
+├── docs/                   # Reference specs (xv6 book, RISC-V privileged spec)
+├── Makefile                # Build system
 ├── linker.ld               # Kernel linker script
 ├── LICENSE
 └── README.md
 ```
 
-The `lectures/` directory contains learning materials organized by phase and
-step (e.g., `0-1-tooling`, `0-2-c-recap`). Each lecture includes a writeup
-and self-contained code exercises that can be built and run independently.
-The `kernel/` directory (Phase 1 onward) is the actual OS source code.
+Each lecture directory contains a `lecture.md` writeup and self-contained exercises with their own `Makefile`, `entry.S`, `linker.ld`, and solution files. The `kernel/` directory is the actual OS — built incrementally across phases.
 
 ## License
 

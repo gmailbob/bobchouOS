@@ -109,17 +109,114 @@ Note: the book has no chapter numbers — these are labeled Ch 1–10 by convent
 
 ## Mapping to bobchouOS Phases
 
-The xv6 book is organized by *concept*, while bobchouOS phases follow *build order*. Some chapters split across multiple phases.
+The xv6 book is organized by *concept*, while bobchouOS phases follow *build order*. Some chapters split across multiple phases; some phases draw from multiple chapters.
 
-| xv6 Book Chapter | bobchouOS Phase | What to read and when |
-|---|---|---|
-| **Ch 1** — OS interfaces | **Phase 6 & 8** | Read as a preview early on; the syscall interfaces (`fork`, `exec`, `pipe`, `open`) become real when you implement them |
-| **Ch 2** — OS organization | **Phase 1 & 2** | 2.1–2.5 (kernel organization, privilege modes) for Phase 1; 2.6 (starting xv6, first process) spans Phases 1–5 |
-| **Ch 3** — Page tables | **Phase 3, 4 & 6** | 3.4–3.5 (physical allocator) = Phase 3; 3.1–3.3 (Sv39, kernel address space) = Phase 4; 3.6–3.8 (process address space, sbrk, exec) = Phase 6 |
-| **Ch 4** — Traps and syscalls | **Phase 2 & 6** | 4.1, 4.5 (trap machinery, kernel traps) = Phase 2; 4.2–4.4 (user traps, syscall dispatch) = Phase 6; 4.6 (page faults) = Phase 4 |
-| **Ch 5** — Interrupts and drivers | **Phase 1 & 2** | 5.1–5.2 (console/UART output) = Phase 1; 5.3–5.4 (concurrency, timer interrupts) = Phase 2 |
-| **Ch 6** — Locking | **Phase 5** | Needed once you have multiple processes and concurrency |
-| **Ch 7** — Scheduling | **Phase 5 & 8** | 7.1–7.4 (context switching, scheduler) = Phase 5; 7.5–7.8 (sleep/wakeup, pipes, wait/exit) = Phases 5 & 8 |
-| **Ch 8** — File system | **Phase 7** | Maps almost 1:1 (buffer cache, logging, inodes, directories, file descriptors) |
-| **Ch 9** — Concurrency revisited | **Phase 5+** | Advanced locking patterns; revisit after basic scheduling works |
-| **Ch 10** — Summary | — | Wrap-up |
+### Ch 1 — OS interfaces → Phase 6, 7, 8
+
+A preview/overview chapter. The syscall API it describes (`fork`, `exec`, `pipe`, `open`, `read`, `write`) becomes real as you implement each subsystem. Worth reading early for context, then re-reading as you build each piece.
+
+### Ch 2 — OS organization → Phase 1, 2, 5
+
+| Section | bobchouOS | Notes |
+|---------|-----------|-------|
+| Privilege modes (2.2) | Phase 2 | M/S/U mode, ecall, trap mechanism |
+| Kernel organization (2.3–2.5) | Phase 1 | Monolithic kernel, code layout |
+| Process overview (2.6) | Phase 5 | struct proc, address space, state machine |
+| Starting xv6, first process (2.7) | Phase 5-1, 6-3 | Kernel bootstrap = 5-1; user init = 6-3 |
+
+### Ch 3 — Page tables → Phase 3, 4, 6
+
+| Section | bobchouOS | Notes |
+|---------|-----------|-------|
+| Paging hardware, Sv39 (3.1) | Phase 4-1 | Three-level page table walk |
+| Kernel address space (3.2–3.3) | Phase 4-1 | Identity map, device MMIO mappings |
+| Physical memory allocator (3.4–3.5) | Phase 3-2 | kalloc/kfree free list |
+| Process address space (3.6) | Phase 6-1 | Per-process user page table |
+| Code: sbrk (3.7) | Phase 6-4 | Grow/shrink user heap |
+| Code: exec (3.8) | Phase 6-3 | ELF loading into user address space |
+
+### Ch 4 — Traps and system calls → Phase 2, 5, 6
+
+| Section | bobchouOS | Notes |
+|---------|-----------|-------|
+| RISC-V trap machinery (4.1) | Phase 2-1 | stvec, sepc, scause, sstatus, sscratch |
+| Traps from user space (4.2) | Phase 6-1 | Trampoline, uservec/userret, trapframe |
+| Calling system calls (4.3) | Phase 6-2 | ecall dispatch, syscall table |
+| System call arguments (4.4) | Phase 6-2 | argint, argaddr, argfd |
+| Traps from kernel space (4.5) | Phase 2-2, 5-1 | kernel_vec, timer interrupt, ret_from_trap |
+| Page-fault exceptions (4.6) | Phase 6-4 | COW fork, lazy allocation, demand paging |
+
+### Ch 5 — Interrupts and device drivers → Phase 1, 2, 7, 8
+
+| Section | bobchouOS | Notes |
+|---------|-----------|-------|
+| Console output (5.2) | Phase 1-2 | UART polling driver |
+| Console input (5.1) | Phase 8-1 | Interrupt-driven RX buffer |
+| Concurrency in drivers (5.3) | Phase 8-1 | Lock + sleep/wakeup in console driver |
+| Timer interrupts (5.4) | Phase 2-3, 5-1 | CLINT timer, mini-SBI |
+| *virtio-blk (implied)* | Phase 7-1 | Block device driver |
+
+### Ch 6 — Locking → Phase 5, 7, 9
+
+| Section | bobchouOS | Notes |
+|---------|-----------|-------|
+| Races + Code: Locks (6.1–6.2) | Phase 5-2 | Spinlock implementation (amoswap) |
+| Using locks (6.3) | Phase 5-2 | Protecting process state, allocator |
+| Deadlock and lock ordering (6.4) | Phase 9-2 | Global lock order, multi-lock scenarios |
+| Locks and interrupt handlers (6.6) | Phase 5-2 | push_off/pop_off, disable interrupts while holding |
+| Instruction and memory ordering (6.7) | Phase 9-2 | fence, __sync_synchronize, compiler barriers |
+| Sleep locks (6.8) | Phase 7-2 | Buffer cache needs locks held across I/O |
+
+### Ch 7 — Scheduling → Phase 5, 8
+
+| Section | bobchouOS | Notes |
+|---------|-----------|-------|
+| Context switching (7.1–7.2) | Phase 5-1 | swtch.S, struct context |
+| Scheduling (7.3) | Phase 5-1 | Round-robin, scheduler loop, yield |
+| mycpu and myproc (7.4) | Phase 5-1 | tp register, per-CPU state |
+| Sleep and wakeup (7.5–7.6) | Phase 5-2 | Lost wakeup, condition-lock pattern |
+| Pipes (7.7) | Phase 8-2 | Sleep/wakeup in practice |
+| Wait, exit, and kill (7.8) | Phase 5-2 | ZOMBIE, reparenting, deferred kill |
+| Process Locking (7.9) | Phase 5-2 | p->lock invariants across state transitions |
+
+### Ch 8 — File system → Phase 7
+
+Nearly 1:1 mapping:
+
+| Section | bobchouOS | Notes |
+|---------|-----------|-------|
+| Buffer cache (8.2–8.3) | Phase 7-2 | bread/bwrite/brelse, LRU |
+| Logging (8.4–8.6) | Phase 7-3 | Write-ahead log, crash recovery |
+| Block allocator (8.7) | Phase 7-4 | Free bitmap |
+| Inodes (8.8–8.10) | Phase 7-4 | On-disk + in-memory inode, direct/indirect |
+| Directory layer (8.11) | Phase 7-5 | dirlookup, dirlink |
+| Path names (8.12) | Phase 7-5 | namei, nameiparent |
+| File descriptor layer (8.13) | Phase 7-6 | struct file, fd table |
+| System calls (8.14) | Phase 7-6 | open/read/write/close/link/unlink |
+
+### Ch 9 — Concurrency revisited → Phase 9
+
+| Section | bobchouOS | Notes |
+|---------|-----------|-------|
+| Locking patterns (9.1) | Phase 9-2 | Fine-grained locks, per-object locks |
+| Lock-like patterns (9.2) | Phase 9-2 | Reference counting, ownership |
+| No locks at all (9.3) | Phase 9-2 | Atomic instructions, started variable |
+| Parallelism (9.4) | Phase 9-1, 9-2 | Multi-hart workloads, contention measurement |
+
+### Ch 10 — Summary
+
+Revisit after completing Phase 9. Reflects on the full system.
+
+---
+
+## Topics beyond xv6 (covered in bobchouOS stretch goals)
+
+xv6 explicitly notes these as absent but present in real systems:
+- Signals and process groups
+- Memory-mapped files (mmap)
+- Demand paging and swap
+- Networking (sockets, TCP/IP)
+- User-level threads (pthreads)
+- Priority scheduling, real-time guarantees
+- DMA, scatter/gather I/O
+- Snapshots, journaling alternatives to logging
