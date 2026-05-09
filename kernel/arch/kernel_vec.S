@@ -51,8 +51,9 @@ kernel_vec:
     sd    x30, 216(sp)    # t5
     sd    x31, 224(sp)    # t6
 
-    # ---- Call C trap handler ----
+    # ---- Call C trap handler, then check if scheduling is needed ----
     call kernel_trap
+    call ret_from_trap
 
     # ---- Restore all general-purpose registers ----
     ld    x1,    0(sp)    # ra

@@ -12,7 +12,7 @@
 /* Print a formatted string to the console. */
 void kprintf(const char *fmt, ...);
 
-/* Print a message and halt the system. */
-void panic(const char *fmt, ...);
+/* Print a message and halt the system. Never returns. */
+__attribute__((noreturn)) void panic(const char *fmt, ...);
 
 #endif /* KPRINTF_H */

@@ -170,8 +170,7 @@ worker(void) {
         count++;
         if (count % 1000000 == 0) {
             intr_off(); /* kprintf is not reentrant */
-            kprintf("[%s] pid=%d count=%d\n",
-                    this_proc()->name, this_proc()->pid, count / 1000000);
+            kprintf("[%s] pid=%d count=%d\n", this_proc()->name, this_proc()->pid, count / 1000000);
             intr_on();
         }
         if (count >= 100000000)

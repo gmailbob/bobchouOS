@@ -76,9 +76,9 @@ kernel_trap(void) {
             /* Timer tick (forwarded from M-mode via SSIP).
              * Clear SSIP so we don't re-trap on sret. */
             csrw(sip, csrr(sip) & ~SIP_SSIP);
-            /* Preempt: if a process is running, yield it. */
+            /* Set flag; ret_from_trap will yield after we return. */
             if (this_cpu()->proc)
-                yield();
+                this_cpu()->need_resched = 1;
             break;
 
             /* IRQ_S_EXT: PLIC external interrupts — future round */
@@ -117,5 +117,20 @@ kernel_trap(void) {
             panic("kernel_trap: %s  scause=%p sepc=%p stval=%p", name, (void *)scause_val,
                   (void *)sepc_val, (void *)stval_val);
         }
+    }
+}
+
+/*
+ * ret_from_trap — called from kernel_vec after kernel_trap returns.
+ * Checks the need_resched flag and yields if set. This is the only
+ * place preemptive scheduling happens — kernel_trap itself just sets
+ * the flag, keeping the trap handler short and clean.
+ */
+void
+ret_from_trap(void) {
+    struct cpu *c = this_cpu();
+    if (c->need_resched && c->proc) {
+        c->need_resched = 0;
+        yield();
     }
 }

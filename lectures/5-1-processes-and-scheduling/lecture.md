@@ -1380,6 +1380,27 @@ may be slightly extended (by the duration of one print), but correctness
 is guaranteed. This is the same approach Linux uses — `printk` acquires
 a console lock that prevents preemption during output.
 
+> **Why kprintf specifically?** Any function can be safely preempted as
+> long as it only touches **private state** (stack variables, registers).
+> The kernel correctly saves/restores all of these across a context
+> switch. kprintf is vulnerable because it touches a **shared resource**
+> — the UART device register. Both processes write to the same physical
+> UART, one byte at a time. If A is mid-output and B starts printing,
+> the device receives interleaved bytes. Worse, the crash occurs because
+> the format string and `va_list` traversal can end up with stale
+> pointers when the preemption happens at exactly the wrong moment.
+>
+> Pure computation (`count++`, arithmetic, comparisons) is immune — it
+> only uses registers and stack, which are per-process and correctly
+> saved/restored. The rule: **preemption is safe if and only if no
+> shared mutable state is accessed.** When shared state is involved,
+> you need either `intr_off` (disable preemption) or a lock (future).
+>
+> Note: the `ret_from_trap` design does NOT fix this bug — it only
+> ensures kernel_trap itself isn't preempted. kprintf runs in process
+> context (not trap context), so it can still be interrupted by a timer
+> that triggers ret_from_trap → yield on the return path.
+
 ### Summary: lessons from the bugs
 
 | Bug | Cause | Category |
@@ -1401,6 +1422,105 @@ deferring scheduling: the trap handler just sets a `need_resched`
 flag and returns via `sret` (which properly restores all state). The
 actual context switch happens later at a well-defined scheduling point.
 xv6 (and we) accept the complexity for simplicity of implementation.
+
+### The better design: `ret_from_trap`
+
+The fundamental constraints that make "swtch before sret" unavoidable:
+1. Only this hart can save its own registers (no instruction to read
+   another hart's registers remotely)
+2. Registers must be saved before switching to another process
+3. swtch must happen before sret — otherwise the process resumes and
+   the scheduling opportunity is lost
+
+Given these constraints, the question isn't *whether* to switch inside
+the kernel_vec frame, but *how clean the call stack is* when we switch.
+
+**Current approach (yield inside kernel_trap):**
+
+```
+B's kernel stack (frozen when preempted):
++---------------------------+ ← kstack + PG_SIZE (top)
+| kernel_vec frame (256B)   |   all 32 regs saved
++---------------------------+
+| kernel_trap frame         | ← SUSPENDED mid-execution
++---------------------------+
+| yield frame               |
++---------------------------+ ← B's context.sp
+```
+
+kernel_trap's frame is live — its locals, frame pointer, everything
+still allocated. This is what caused our bugs: kernel_trap's s0 leaks
+into the restore path, SIE state is trapped inside the frozen frame,
+and any non-reentrant code (kprintf) in kernel_trap can be preempted.
+
+**Better approach (ret_from_trap):**
+
+```c
+// kernel_trap: just handle the event, set a flag
+void kernel_trap(void) {
+    ...
+    if (timer_interrupt)
+        this_cpu()->need_resched = 1;  // don't yield here!
+    ...
+}
+
+// ret_from_trap: separate scheduling decision point
+void ret_from_trap(void) {
+    if (this_cpu()->need_resched) {
+        this_cpu()->need_resched = 0;
+        yield();
+    }
+}
+```
+
+```asm
+kernel_vec:
+    save all regs
+    call kernel_trap       # handles event, returns cleanly
+    call ret_from_trap     # checks flag, maybe yields
+    restore all regs
+    sret
+```
+
+The frozen stack becomes:
+
+```
+B's kernel stack (frozen when preempted via ret_from_trap):
++---------------------------+ ← kstack + PG_SIZE (top)
+| kernel_vec frame (256B)   |   all 32 regs saved
++---------------------------+
+| ret_from_trap frame       |   tiny (just ra)
++---------------------------+
+| yield frame               |
++---------------------------+ ← B's context.sp
+```
+
+kernel_trap's frame is **gone** — it returned normally, prologue/epilogue
+ran, all its callee-saved registers restored by the compiler. No
+suspended C function on the stack.
+
+**Three layers, each with a single responsibility:**
+
+| Layer | Responsibility | Knows about scheduling? |
+|-------|---------------|------------------------|
+| kernel_vec | Save/restore registers | No |
+| kernel_trap | Handle the event, set flags | Only sets a flag |
+| ret_from_trap | Policy decision before returning | Yes — checks flag, calls yield |
+
+**Why the bugs disappear:**
+- **SIE bug:** kernel_trap returns normally, no frozen trap state. Can
+  enable SIE in ret_from_trap before yield, or just rely on sret
+  restoring SPIE after yield returns.
+- **Register corruption:** kernel_trap finished — its frame is
+  deallocated. s0-s11 are whatever kernel_trap's epilogue restored
+  (which is what kernel_vec saved). yield/swtch operate on a clean
+  state.
+- **kprintf reentrancy:** kernel_trap runs to completion without being
+  switched away. No mid-function preemption.
+
+This is the Linux/FreeBSD model (`ret_from_exception`, `ast()`). After
+debugging the issues with yield-inside-trap (Part 7 above), we refactored
+bobchouOS to adopt this cleaner design.
 
 ---
 

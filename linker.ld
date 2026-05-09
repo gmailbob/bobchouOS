@@ -15,9 +15,19 @@
  *               │  16KB stack  │  Stack grows downward
  *               ├──────────────┤ ← stack_top (sp starts here)
  *               └──────────────┘ ← _kernel_end
+ *
+ * PHDRS defines ELF segment permissions so the linker doesn't emit a
+ * single RWX segment (which triggers a warning). Runtime permissions
+ * are enforced by the page table, not these headers.
  */
 
 ENTRY(_start)
+
+PHDRS
+{
+    text PT_LOAD FLAGS(5);   /* R-X */
+    data PT_LOAD FLAGS(6);   /* RW- */
+}
 
 SECTIONS
 {
@@ -29,7 +39,7 @@ SECTIONS
     .text : {
         *(.text.entry)
         *(.text .text.*)
-    }
+    } :text
 
     . = ALIGN(4096);
     _text_end = .;
@@ -37,14 +47,14 @@ SECTIONS
     /* Read-only data (string literals, const arrays). */
     .rodata : {
         *(.rodata .rodata.*)
-    }
+    } :data
 
     . = ALIGN(16);
 
     /* Initialized global variables. */
     .data : {
         *(.data .data.*)
-    }
+    } :data
 
     . = ALIGN(16);
 
@@ -53,7 +63,7 @@ SECTIONS
     .bss : {
         *(.bss .bss.*)
         *(COMMON)
-    }
+    } :data
     _bss_end = .;
 
     /* Kernel stack: 16KB, 16-byte aligned. */

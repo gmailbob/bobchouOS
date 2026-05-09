@@ -92,6 +92,7 @@ struct cpu {
     struct proc *proc;
     struct context scheduler;
     int noff;
+    int need_resched;
 };
 
 /* --- Function declarations --- */
