@@ -23,7 +23,7 @@
 > This first lecture builds the scheduler and context switch mechanism.
 > By the end, bobchouOS will run multiple kernel threads that
 > interleave on the single hart — proving the mechanism works before we
-> tackle user-mode processes in Round 5-2.
+> tackle user-mode processes in Phase 6.
 >
 > **What you will understand after this lecture:**
 >
@@ -86,30 +86,17 @@ All of this lives in `struct proc` — one per process, allocated via
 
 ### Process lifecycle states
 
+For Round 5-1, we only need two states — a simple loop:
+
 ```
-                    +-----------+
-         +--------->|  RUNNABLE |<---------+
-         |          +-----+-----+          |
-         |                |                |
-         |          schedule picks it   yield / preempt
-         |                |                |
-         |                v                |
-         |          +-----------+          |
-         |          |  RUNNING  |----------+
-         |          +-----+-----+
-         |                |
-    wake up        exit() |-----sleep()
-         |                |          |
-         |                v          v
-         |          +---------+  +-----------+
-         |          | ZOMBIE  |  |  SLEEPING |
-         |          +---------+  +-----+-----+
-         |                             |
-         +-----------------------------+
+                 +--------yield / preempt----------+
+                 |                                 |
+                 v                                 |
+creation --> [RUNNABLE] ---scheduler picks---> [RUNNING]
 ```
 
-For Round 5-1, we only need **RUNNABLE** and **RUNNING**. SLEEPING and
-ZOMBIE arrive in Round 5-3 with `sleep()`/`exit()`/`wait()`.
+SLEEPING, ZOMBIE, and the full lifecycle state machine (exit, wait,
+sleep/wakeup) arrive in Round 5-2.
 
 ---
 
@@ -141,7 +128,7 @@ struct proc {
     struct list_head run_list;     // run queue (only when RUNNABLE)
     struct list_head pid_link;     // PID hash table bucket chain
 
-    /* --- Family (Round 5-3) --- */
+    /* --- Family (Round 5-2) --- */
     struct proc *parent;
     struct list_head children;    // head of my children list
     struct list_head sibling;     // link in parent's children list
@@ -150,12 +137,12 @@ struct proc {
     struct context context;       // saved callee-regs for swtch
     uint64 kstack;                // kernel stack base address
 
-    /* --- Address space (Round 5-2) --- */
+    /* --- Address space (Phase 6) --- */
     pagetable_t pagetable;        // user page table
     struct trapframe *trapframe;  // saved user regs for trap
     uint64 sz;                    // user memory size
 
-    /* --- Exit (Round 5-3) --- */
+    /* --- Exit (Round 5-2) --- */
     int exit_status;
 };
 ```
@@ -217,7 +204,7 @@ Every process has **two stacks**:
 - **Kernel stack** — used whenever the process executes in kernel mode
   (trap handlers, syscalls, `yield()`, `swtch`). One page, allocated at
   process creation, always valid.
-- **User stack** — (Round 5-2) used when running in U-mode. Saved
+- **User stack** — (Phase 6) used when running in U-mode. Saved
   separately in the trapframe when entering the kernel.
 
 Context switch always happens in kernel mode (inside `yield()` →
@@ -231,7 +218,7 @@ Context switch always happens in kernel mode (inside `yield()` →
 > one at trap time (you'd need a stack to call kmalloc).
 
 In Round 5-1, our kernel threads have only a kernel stack (no user
-stack). The two-stack model becomes visible in Round 5-2.
+stack). The two-stack model becomes visible in Phase 6.
 
 ### `struct cpu` — per-hart state
 
@@ -242,7 +229,7 @@ context and a pointer to the currently running process:
 struct cpu {
     struct proc *proc;            // currently running process, or NULL
     struct context scheduler;     // scheduler's saved context
-    int noff;                     // interrupt-disable nesting depth
+    int need_resched;             // timer set this; ret_from_trap checks
 };
 ```
 
@@ -913,7 +900,7 @@ scheduled independently.
 
 This is our first milestone because it tests the full scheduling
 mechanism without introducing user page tables or the trampoline
-(Round 5-2 concerns). Kernel threads aren't just for testing — real
+(Phase 6 concerns). Kernel threads aren't just for testing — real
 kernels use them permanently for background tasks (Linux's `kswapd`
 for page reclaim, `ksoftirqd` for deferred interrupt work, `kworker`
 for async work queues).
@@ -1152,26 +1139,112 @@ Two registers manage this:
   > `s0` often holds cached values like `&cpus` in our worker function
   > rather than serving as a frame pointer.
 
-The compiler's function prologue typically does:
+### The two sides of register saving
+
+Register saving is split between two responsibilities:
+
+**Callee side (inside the function body):** The function saves any
+callee-saved registers (`s0–s11`, `ra`) that its body will overwrite,
+and restores them before `ret`. Only the registers it actually uses
+are saved — the compiler is lazy in the best sense.
 
 ```asm
-addi  sp, sp, -N       # allocate frame (N bytes)
-sd    ra, (N-8)(sp)    # save return address
-sd    s0, (N-16)(sp)   # save caller's frame pointer
-addi  s0, sp, N        # s0 = base of this frame
+# Callee: function prologue/epilogue
+foo:
+    addi  sp, sp, -32      # allocate frame
+    sd    ra, 24(sp)       # save ra — foo calls bar below, and `call bar` overwrites ra
+    sd    s0, 16(sp)       # save s0 (this function will use it)
+    sd    s1, 8(sp)        # save s1 (this function will use it)
+    ...                    # function body — free to use s0, s1
+    ld    s1, 8(sp)        # restore s1
+    ld    s0, 16(sp)       # restore s0
+    ld    ra, 24(sp)       # restore ra
+    addi  sp, sp, 32       # deallocate frame
+    ret
 ```
 
-And the epilogue reverses it:
+**Caller side (around a `call` instruction):** Before calling another
+function, the caller saves any caller-saved registers (`t0–t6`,
+`a0–a7`) that it still needs after the call returns. Again, only the
+ones that are live (still needed later) — dead registers are not saved.
 
 ```asm
-ld    ra, (N-8)(sp)    # restore return address
-ld    s0, (N-16)(sp)   # restore caller's frame pointer
-addi  sp, sp, N        # deallocate frame
-ret
+# Caller: saving around a call
+    ...                    # computing with t0 — still need it after call
+    sd    t0, 0(sp)        # save caller-saved reg we need later
+    call  bar              # bar may trash t0
+    ld    t0, 0(sp)        # restore — bar might have clobbered t0
+    ...                    # continue using t0
 ```
 
-The key point for Bug 2: **each function overwrites `s0` with its own
-frame pointer.** This is safe normally because `s0` is callee-saved —
+**Neither side saves registers it doesn't need.** The compiler analyzes
+liveness:
+- Callee: "which s-regs will my body overwrite?" → save only those
+- Caller: "which t/a-regs do I still need after this call?" → save
+  only those
+
+So a stack frame's size varies per function based on how many registers
+actually need saving plus how many local variables can't live in
+registers.
+
+### Function parameters: where do they live?
+
+The calling convention places the first 8 arguments in `a0–a7`. What
+happens to them inside the function depends on usage:
+
+| Situation | Where parameter lives |
+|---|---|
+| Read-only, no call crosses | stays in `a0–a7` — never touches memory |
+| Needed across a call | moved to an `s`-reg, or spilled to stack |
+| Address taken (`&param`) | forced to stack (registers have no address) |
+
+**Example — parameter stays in register (no call, read-only):**
+```c
+int add(int x, int y) { return x + y; }
+```
+```asm
+add:
+    add  a0, a0, a1       # use a0/a1 directly
+    ret                   # no stack frame at all!
+```
+
+**Example — parameter needed across a call:**
+```c
+int foo(int x) { bar(); return x + 1; }
+```
+The compiler can either spill `a0` to the stack, or (better) move it
+to a callee-saved register that survives the call:
+```asm
+foo:
+    addi sp, sp, -16
+    sd   ra, 8(sp)
+    sd   s0, 0(sp)        # save old s0 (callee obligation)
+    mv   s0, a0           # stash parameter in s0 — survives call to bar
+    call bar
+    addi a0, s0, 1        # use s0 directly, no memory reload
+    ld   s0, 0(sp)        # restore old s0
+    ld   ra, 8(sp)
+    addi sp, sp, 16
+    ret
+```
+
+**Example — address taken (must be in memory):**
+```c
+int foo(int x) { return bar(&x); }
+```
+Here `x` MUST go to the stack — registers don't have addresses.
+
+> **Textbook vs reality:** University courses teach "parameters go on
+> the stack as local variables." That's the C *abstract machine* model.
+> The compiler optimizes away from that whenever it can prove the address
+> is never taken and the value fits in a register. With `-O0` (no
+> optimization), everything goes to the stack — which is why debugging
+> is easier at `-O0` (GDB can inspect every variable's memory address).
+
+### The key point for Bug 2
+
+**Each function overwrites `s0` with its own value** (frame pointer or
+cached data). This is safe normally because `s0` is callee-saved —
 each function saves the old value in its prologue and restores it in
 its epilogue. But if we bypass the epilogue (via `swtch`), the old `s0`
 is lost unless we saved it elsewhere (kernel_vec's stack frame).

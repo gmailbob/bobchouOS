@@ -4,9 +4,11 @@
 #   a0 = old context to save into
 #   a1 = new context to restore from
 #
-# Saves 14 callee-saved registers to *old, restores from *new, then
-# ret jumps to new->ra (NOT back to swtch's caller — the whole point
-# is to land in a different function on a different stack).
+# Only callee-saved registers (s0–s11, sp) + ra are saved, because
+# swtch is reached via a normal function call — the calling convention
+# guarantees caller-saved registers are already on the stack.
+# ra is included as the resume address: ret jumps to new->ra, landing
+# in a different function on a different stack.
 #
 # Offsets must match struct context field order in proc.h.
 # See Lecture 5-1, Part 3.

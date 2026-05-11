@@ -68,7 +68,7 @@ struct proc {
     struct list_head run_list;
     struct list_head pid_link;
 
-    /* --- Family (Round 5-3) --- */
+    /* --- Family (Round 5-2) --- */
     struct proc *parent;
     struct list_head children;
     struct list_head sibling;
@@ -77,12 +77,12 @@ struct proc {
     struct context context;
     uint64 kstack;
 
-    /* --- Address space (Round 5-2) --- */
+    /* --- Address space (Phase 6) --- */
     pagetable_t pagetable;
     struct trapframe *trapframe;
     uint64 sz;
 
-    /* --- Exit (Round 5-3) --- */
+    /* --- Exit (Round 5-2) --- */
     int exit_status;
 };
 
@@ -91,7 +91,6 @@ struct proc {
 struct cpu {
     struct proc *proc;
     struct context scheduler;
-    int noff;
     int need_resched;
 };
 

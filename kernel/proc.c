@@ -95,9 +95,8 @@ scheduler(void) {
 }
 
 /*
- * yield — voluntarily give up the CPU.
- * Marks current process RUNNABLE, pushes to run queue tail,
- * and switches back to the scheduler.
+ * yield — give up the CPU.
+ * Called voluntarily by a process, or by ret_from_trap on timer preemption.
  */
 void
 yield(void) {
