@@ -1010,7 +1010,7 @@ exit(int status) {
     struct proc *p = this_proc();
     unsigned long flags;
 
-    if (p == initproc)
+    if (p == init_proc)
         panic("init exiting");
 
     spin_lock_irqsave(&wait_lock, &flags);
@@ -1054,9 +1054,9 @@ static void
 reparent(struct proc *p) {
     struct proc *child;
     list_for_each_entry(child, &p->children, sibling) {
-        child->parent = initproc;
+        child->parent = init_proc;
     }
-    list_splice(&p->children, &initproc->children);
+    list_splice(&p->children, &init_proc->children);
 }
 ```
 
@@ -1287,7 +1287,7 @@ state in local stack variables rather than per-CPU fields.
 struct spinlock wait_lock;      // protects process tree relationships
 struct spinlock run_queue_lock; // protects run queue
 struct spinlock pid_lock;       // protects PID allocation + hash table
-struct proc *initproc;          // pointer to PID 1
+struct proc *init_proc;          // pointer to PID 1
 ```
 
 ---

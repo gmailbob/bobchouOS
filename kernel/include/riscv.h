@@ -134,6 +134,22 @@ read_mtime(void) {
     return *(volatile uint64 *)CLINT_MTIME;
 }
 
+/* ---- S-mode interrupt enable/disable ---- */
+static inline unsigned long
+intr_get(void) {
+    return csrr(sstatus) & SSTATUS_SIE;
+}
+
+static inline void
+intr_on(void) {
+    csrw(sstatus, csrr(sstatus) | SSTATUS_SIE);
+}
+
+static inline void
+intr_off(void) {
+    csrw(sstatus, csrr(sstatus) & ~SSTATUS_SIE);
+}
+
 #endif /* !__ASSEMBLER__ */
 
 #endif /* RISCV_H */

@@ -36,6 +36,8 @@ OBJS    = kernel/arch/entry.o \
           kernel/vm.o \
           kernel/kmalloc.o \
           kernel/proc.o \
+          kernel/spinlock.o \
+          kernel/wait_queue.o \
           kernel/drivers/uart.o \
           kernel/lib/string.o \
           kernel/lib/kprintf.o
@@ -48,7 +50,10 @@ TEST_OBJS = kernel/test/run_tests.o \
             kernel/test/test_vm.o \
             kernel/test/test_kmalloc.o \
             kernel/test/test_list.o \
-            kernel/test/test_hashtable.o
+            kernel/test/test_hashtable.o \
+            kernel/test/test_spinlock.o \
+            kernel/test/test_wait_queue.o \
+            kernel/test/test_proc.o
 
 QEMU    = qemu-system-riscv64
 QFLAGS  = -machine virt -nographic -bios none -kernel $(TARGET)

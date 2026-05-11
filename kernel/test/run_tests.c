@@ -19,6 +19,9 @@ void test_vm(void);
 void test_kmalloc(void);
 void test_list(void);
 void test_hashtable(void);
+void test_spinlock(void);
+void test_wait_queue(void);
+void test_proc(void);
 
 void
 run_tests(void) {
@@ -32,6 +35,9 @@ run_tests(void) {
     test_kmalloc();
     test_list();
     test_hashtable();
+    test_spinlock();
+    test_wait_queue();
+    test_proc();
 
     kprintf("\n=== results: %d passed, %d failed ===\n\n", test_pass, test_fail);
 }

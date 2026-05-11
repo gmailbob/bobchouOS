@@ -1,7 +1,7 @@
 /*
  * proc.h — Process management structures and declarations.
  *
- * See Lecture 5-1 for design rationale.
+ * See Lectures 5-1 and 5-2 for design rationale.
  */
 
 #ifndef PROC_H
@@ -9,6 +9,8 @@
 
 #include "types.h"
 #include "list.h"
+#include "spinlock.h"
+#include "wait_queue.h"
 
 /* Number of PID hash table buckets (2^PID_HASH_BITS = 64). */
 #define PID_HASH_BITS 6
@@ -58,6 +60,8 @@ struct trapframe;
 /* --- struct proc --- */
 
 struct proc {
+    struct spinlock lock; /* protects: state, killed, exit_status */
+
     /* --- Identity --- */
     int pid;
     char name[PROC_NAME_LEN];
@@ -68,10 +72,11 @@ struct proc {
     struct list_head run_list;
     struct list_head pid_link;
 
-    /* --- Family (Round 5-2) --- */
+    /* --- Family --- */
     struct proc *parent;
     struct list_head children;
     struct list_head sibling;
+    struct wait_queue child_wq; /* this proc sleeps here when calling wait() */
 
     /* --- Execution state --- */
     struct context context;
@@ -82,8 +87,10 @@ struct proc {
     struct trapframe *trapframe;
     uint64 sz;
 
-    /* --- Exit (Round 5-2) --- */
+    /* --- Lifecycle --- */
+    int killed;
     int exit_status;
+    struct list_head wait_link; /* for sleeping on a wait queue */
 };
 
 /* --- struct cpu --- */
@@ -100,14 +107,25 @@ void proc_init(void);
 struct proc *proc_create_kernel(void (*fn)(void), const char *name);
 void scheduler(void);
 void yield(void);
+void sched(void);
+void exit(int status);
+int wait(int *status);
+int kill(int pid);
 struct cpu *this_cpu(void);
 struct proc *this_proc(void);
 
 /* swtch is in swtch.S */
 extern void swtch(struct context *old, struct context *new);
 
+/* Global locks (defined in proc.c). */
+extern struct spinlock wait_lock;
+extern struct spinlock run_queue_lock;
+extern struct spinlock pid_lock;
+extern struct proc *init_proc;
+
 /* Kernel threads (defined in proc.c). */
 void idle_thread(void);
+void init_thread(void);
 void worker(void);
 
 #endif /* PROC_H */

@@ -63,9 +63,10 @@ kmain(void) {
 #else
     /* Initialize process subsystem and create kernel threads. */
     proc_init();
-    proc_create_kernel(idle_thread, "idle"); /* PID 0 */
-    proc_create_kernel(worker, "worker_a");  /* PID 1 */
-    proc_create_kernel(worker, "worker_b");  /* PID 2 */
+    proc_create_kernel(idle_thread, "idle");             /* PID 0 */
+    init_proc = proc_create_kernel(init_thread, "init"); /* PID 1 */
+    proc_create_kernel(worker, "worker_a");              /* PID 2 */
+    proc_create_kernel(worker, "worker_b");              /* PID 3 */
 
     kprintf("starting scheduler...\n");
     scheduler(); /* never returns */
