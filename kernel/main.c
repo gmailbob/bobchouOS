@@ -55,13 +55,13 @@ kmain(void) {
     vm_create_kernel_pt();
     vm_enable_paging();
     kmalloc_init();
+    proc_init();
 
 #ifdef RUN_TESTS
     run_tests();
     kprintf("tests complete, shutting down.\n");
     sbi_shutdown();
 #else
-    proc_init();
     proc_bootstrap();
 
     kprintf("starting scheduler...\n");

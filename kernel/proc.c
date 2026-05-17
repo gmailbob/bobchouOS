@@ -30,11 +30,8 @@ struct spinlock run_queue_lock;
 struct spinlock pid_lock;
 struct proc *init_proc;
 
-/* --- PID allocation --- */
+/* --- PID allocation (self-contained locking) --- */
 
-/*
- * alloc_pid — allocate the next PID.
- */
 static int
 alloc_pid(void) {
     spin_lock(&pid_lock);
@@ -58,6 +55,8 @@ this_proc(void) {
     panic("this_proc: no current process");
 }
 
+/* --- Run queue (self-contained locking) --- */
+
 void
 run_queue_add(struct proc *p) {
     spin_lock(&run_queue_lock);
@@ -65,10 +64,14 @@ run_queue_add(struct proc *p) {
     spin_unlock(&run_queue_lock);
 }
 
+/* --- Switch to scheduler --- */
+
 /*
  * sched — switch from current process to scheduler.
- * Caller MUST hold p->lock (the golden rule).
- * Scheduler releases p->lock on the other side.
+ *
+ * Precondition: caller holds p->lock (the golden rule).
+ * Postcondition: scheduler releases p->lock on the other side.
+ *                When sched returns, scheduler has re-acquired p->lock for us.
  */
 void
 sched(void) {
@@ -89,10 +92,15 @@ pick_next(void) {
 /*
  * scheduler — main scheduling loop (never returns).
  *
- * add locking per the golden rule:
- * - Release prev->lock after swtch returns
- * - Acquire run_queue_lock around pick_next
- * - Acquire p->lock before setting state and swtch
+ * Precondition: interrupts are off (entered via swtch from a process
+ * that held a lock with irqsave, or from kmain at boot before any
+ * intr_on). Uses plain spin_lock throughout — safe because SIE stays
+ * off for the entire scheduler loop (we never call intr_on).
+ *
+ * Each iteration:
+ * 1. Release prev process's lock (it yielded holding p->lock)
+ * 2. Pick next RUNNABLE process from run queue (under run_queue_lock)
+ * 3. Acquire p->lock, set RUNNING, arm timer, swtch to it
  */
 void
 scheduler(void) {
@@ -107,8 +115,14 @@ scheduler(void) {
         p->state = PROC_RUNNING;
         c->proc = p;
         sbi_set_timer(read_mtime() + TIMER_INTERVAL);
-        // later p will release the lock, do work and then re-lock when crossing swtch
+
+        /* p resumes here (kthread_start/yield) and releases p->lock we
+         * just acquired. p runs freely, then re-acquires p->lock when it
+         * calls sched() to yield back. In wq_sleep, p->lock is never
+         * released by p itself — the scheduler does it below. */
         swtch(&c->scheduler, &p->context);
+
+        /* p yielded back (holding p->lock from yield/exit/wq_sleep) */
         c->proc = NULL;
         spin_unlock(&p->lock);
     }
@@ -116,161 +130,152 @@ scheduler(void) {
 
 /*
  * yield — give up the CPU.
- * Called voluntarily by a process, or by ret_from_trap on timer preemption.
+ * Called voluntarily by a process (SIE may be on), or by ret_from_trap
+ * on timer preemption (SIE off). Uses irqsave to handle both safely.
  *
- * add locking per the golden rule:
- * - Acquire run_queue_lock (plain — interrupts off from trap or caller)
- * - Acquire p->lock (plain)
- * - Set state RUNNABLE, add to run queue tail
- * - Release run_queue_lock
- * - Call sched() (p->lock crosses into scheduler)
- * - After sched returns: release p->lock
- *
- * Currently: unlocked version from Round 5-1.
+ * Postcondition: returns with interrupt state restored.
  */
 void
 yield(void) {
     struct proc *p = this_proc();
-    spin_lock(&p->lock);
-    run_queue_add(p);
+    unsigned long irq;
+    spin_lock_irqsave(&p->lock, &irq);
     p->state = PROC_RUNNABLE;
-    swtch(&p->context, &this_cpu()->scheduler);
-    spin_unlock(&p->lock);
+    run_queue_add(p);
+    sched();                               /* p->lock crosses boundary */
+    spin_unlock_irqrestore(&p->lock, irq); /* scheduler re-acquired it for us */
 }
 
 /*
  * exit — terminate the current process.
  *
- * - Panic if init_proc is exiting
- * - Acquire wait_lock (irqsave — outermost)
- * - Reparent children to init_proc:
- *     list_for_each_entry over p->children, set child->parent = init_proc
- *     list_splice(&p->children, &init_proc->children) to move list
- * - wq_wake_one(&p->parent->child_wq) — wake parent
- * - Acquire p->lock (plain — inner)
- * - Set p->exit_status = status, p->state = PROC_ZOMBIE
- * - spin_unlock(&wait_lock) — release wait_lock (plain, not irqrestore,
- *   because we still hold p->lock and can't restore interrupts yet)
- * - sched() — never returns, p->lock released by scheduler
+ * Reparents children to init, wakes parent, marks ZOMBIE, yields forever.
+ * Never returns.
  */
 void
 exit(int status) {
     struct proc *p = this_proc();
-    if (p->pid <= 1)
-        panic("idel or init proc exit.");
 
-    unsigned long irq; // dead data, use irq variant just to disable interrupt
+    if (p->pid <= 1)
+        panic("idle or init exiting");
+
+    unsigned long irq; /* dead — exit never returns, so irq is never restored */
     spin_lock_irqsave(&wait_lock, &irq);
 
-    struct proc *child, *tmp;
-    list_for_each_entry_safe(child, tmp, &p->children, sibling) {
+    /* Reparent children to init */
+    while (!list_empty(&p->children)) {
+        struct proc *child = list_first_entry(&p->children, struct proc, sibling);
         child->parent = init_proc;
-        list_del(&child->sibling); // remove child from p->children
+        list_del(&child->sibling);
         list_add_tail(&child->sibling, &init_proc->children);
     }
 
+    /* Wake parent — it might be sleeping in wait() */
     wq_wake_one(&p->parent->child_wq);
+
     spin_lock(&p->lock);
     p->exit_status = status;
     p->state = PROC_ZOMBIE;
-    spin_unlock(&wait_lock);
-    sched();
+    spin_unlock(&wait_lock); /* plain unlock — still hold p->lock, can't restore irq */
+
+    sched(); /* never returns */
+    panic("zombie exit");
+    (void)irq;
+}
+
+/*
+ * free_proc — remove a zombie process from all data structures and free it.
+ *
+ * Precondition: caller holds wait_lock.
+ */
+static void
+free_proc(struct proc *p) {
+    list_del(&p->sibling);
+    list_del(&p->all_list);
+    list_del(&p->pid_link);
+    kfree((void *)p->kstack);
+    kmfree(p);
 }
 
 /*
  * wait — wait for a child to exit, reap it.
  *
- * Returns the child's PID (or -1 if no children).
+ * Returns the child's PID (or -1 if no children exist).
  * Writes child's exit status to *status if non-NULL.
  *
- * TODO:
- * - Acquire wait_lock (irqsave — outermost)
- * - Loop:
- *   - Scan children list (list_for_each_entry over p->children, sibling)
- *   - For each child: acquire child->lock (plain), check if ZOMBIE
- *     - If ZOMBIE: save pid/status, release child->lock, freeproc(child),
- *       release wait_lock (irqrestore), return pid
- *     - If not: release child->lock, continue
- *   - If no children at all: release wait_lock (irqrestore), return -1
- *   - If children exist but no zombie: wq_sleep(&p->child_wq, &wait_lock)
- *
- * freeproc(child) should:
- * - list_del(&child->sibling)    — remove from parent's children
- * - list_del(&child->all_list)   — remove from global all_procs
- * - list_del(&child->pid_link)   — remove from PID hash table
- * - kfree((void *)child->kstack) — free kernel stack page
- * - kmfree(child)                — free proc struct
+ * Sleeps until a child exits if children exist but none are zombies yet.
  */
 int
 wait(int *status) {
     struct proc *p = this_proc();
-
     unsigned long irq;
+
     spin_lock_irqsave(&wait_lock, &irq);
 
-    if (list_empty(&p->children)) {
-        spin_unlock_irqrestore(&wait_lock, irq);
-        return -1;
-    }
-
-    struct proc *child;
-    list_for_each_entry(child, &p->children, sibling) {
-        spin_lock(&child->lock);
-        if (child->state == PROC_ZOMBIE) {
-            int pid = child->pid;
-            *status = child->exit_status;
-            list_del(&child->sibling);
-            list_del(&child->all_list);
-            list_del(&child->pid_link);
-            kfree((void *)child->kstack);
-            kmfree(child); // clock also recycled
+    for (;;) {
+        if (list_empty(&p->children)) {
             spin_unlock_irqrestore(&wait_lock, irq);
-            return pid;
+            return -1;
         }
-        spin_unlock(&child->lock);
-    }
 
-    wq_sleep(&p->child_wq, &wait_lock);
-    return 0;
+        struct proc *child;
+        list_for_each_entry(child, &p->children, sibling) {
+            spin_lock(&child->lock);
+            if (child->state == PROC_ZOMBIE) {
+                int pid = child->pid;
+                if (status)
+                    *status = child->exit_status;
+                spin_unlock(&child->lock);
+                free_proc(child);
+                spin_unlock_irqrestore(&wait_lock, irq);
+                return pid;
+            }
+            spin_unlock(&child->lock);
+        }
+
+        /* Check killed before sleeping — if we were woken by kill(),
+         * exit instead of sleeping again. */
+        if (p->killed) {
+            spin_unlock_irqrestore(&wait_lock, irq);
+            exit(-1);
+        }
+
+        /* Children exist but no zombie — sleep until one exits */
+        wq_sleep(&p->child_wq, &wait_lock);
+        /* wq_sleep releases wait_lock, sleeps, re-acquires it */
+    }
 }
 
 /*
  * kill — mark a process for termination.
  *
- * Sets p->killed = 1. If the process is SLEEPING, wakes it
- * (moves to RUNNABLE + run queue) so it can notice the flag.
- *
- * TODO:
- * - Look up process by PID in pid_table using hash_for_each_entry
- * - If not found, return -1
- * - Acquire p->lock (irqsave — entry point)
- * - Set p->killed = 1
- * - If p->state == PROC_SLEEPING:
- *   - Remove from wait queue: list_del(&p->wait_link)
- *     (note: ideally under wq->lock, but we may not know which queue —
- *      for now, p->lock serialization is sufficient on single-hart)
- *   - Set state = PROC_RUNNABLE
- *   - Acquire run_queue_lock, list_add_tail to run queue, release
- * - Release p->lock (irqrestore)
- * - Return 0
+ * Sets p->killed = 1. If SLEEPING, wakes it so it can notice the flag.
+ * Returns 0 on success, -1 if PID not found.
  */
 int
 kill(int pid) {
     int bucket = hash_int(pid) & (HT_SIZE(PID_HASH_BITS) - 1);
-    struct proc *p = NULL;
+    struct proc *p;
+    int found = 0;
+
     list_for_each_entry(p, &pid_table[bucket], pid_link) {
-        if (p->pid == pid)
+        if (p->pid == pid) {
+            found = 1;
             break;
+        }
     }
-    if (!p)
+    if (!found)
         return -1;
 
     unsigned long irq;
     spin_lock_irqsave(&p->lock, &irq);
     p->killed = 1;
     if (p->state == PROC_SLEEPING) {
-        list_del(&p->wait_link); // TODO: should lock wq
+        /* TODO(Phase 9): should hold wq->lock for list_del, but we don't
+         * know which queue p is on. Safe on single-hart (interrupts off). */
+        list_del(&p->wait_link);
         p->state = PROC_RUNNABLE;
+        run_queue_add(p);
     }
     spin_unlock_irqrestore(&p->lock, irq);
     return 0;
@@ -279,51 +284,62 @@ kill(int pid) {
 /* --- Process creation --- */
 
 /*
+ * kthread_start — called at the beginning of every kernel thread.
+ *
+ * The scheduler holds p->lock when it switches to a new process (golden rule).
+ * A brand-new thread has never called yield(), so it has no matching
+ * spin_unlock. This function provides that, and enables interrupts.
+ *
+ * Must be the first thing every kernel thread function calls.
+ */
+static inline void
+kthread_start(void) {
+    spin_unlock(&this_proc()->lock);
+    intr_on();
+}
+
+/*
  * proc_create_kernel — create a new kernel thread.
  *
- * Allocates proc via kmalloc, assigns PID, allocates kernel stack,
- * sets up context so swtch "returns" into fn, and adds proc to
- * run queue, all-procs list, and PID hash table.
- *
- * Parent is set to init_proc (or NULL for idle/init themselves).
- *
- * TODO: add initialization for new fields:
- * - spin_init(&p->lock, name)
- * - wq_init(&p->child_wq, name)
- * - INIT_LIST_HEAD(&p->children)
- * - INIT_LIST_HEAD(&p->wait_link)
- * - Set p->parent and link into parent's children list
- * - Protect PID allocation and run queue with appropriate locks
+ * Allocates proc, assigns PID, allocates kstack, sets up context so
+ * swtch "returns" into forkret (which releases p->lock, then calls fn).
+ * Adds to run queue, all-procs, PID hash table.
+ * Parent is init_proc for PID > 1 (NULL for idle/init themselves).
  */
 struct proc *
 proc_create_kernel(void (*fn)(void), const char *name) {
     struct proc *p = kmalloc(sizeof(struct proc));
     memset(p, 0, sizeof(struct proc));
 
-    unsigned long irq;
-    spin_lock_irqsave(&pid_lock, &irq);
+    /* Identity */
     p->pid = alloc_pid();
-    spin_unlock_irqrestore(&pid_lock, irq);
     for (int i = 0; i < PROC_NAME_LEN - 1 && name[i]; i++)
         p->name[i] = name[i];
 
+    /* Kernel stack */
     p->kstack = (uint64)kalloc();
     if (!p->kstack)
         panic("proc_create_kernel: kalloc failed");
 
+    /* Context: swtch will "ret" into fn. fn must call kthread_start()
+     * as its first action (releases p->lock + enables interrupts). */
     p->context.ra = (uint64)fn;
     p->context.sp = p->kstack + PG_SIZE;
-    p->state = PROC_RUNNABLE;
 
+    /* Initialize new 5-2 fields */
     spin_init(&p->lock, name);
     wq_init(&p->child_wq, name);
     INIT_LIST_HEAD(&p->children);
     INIT_LIST_HEAD(&p->wait_link);
-    if (p->pid > 1) {
+
+    /* Parent-child linkage (PID 0 and 1 have no parent) */
+    if (init_proc) {
         p->parent = init_proc;
-        list_add(&p->sibling, &init_proc->children);
+        list_add_tail(&p->sibling, &init_proc->children);
     }
 
+    /* Add to global structures */
+    p->state = PROC_RUNNABLE;
     list_add_tail(&p->all_list, &all_procs);
     run_queue_add(p);
     hash_add(pid_table, &p->pid_link, PID_HASH_BITS, hash_int(p->pid));
@@ -335,9 +351,7 @@ proc_create_kernel(void (*fn)(void), const char *name) {
 
 /*
  * proc_init — initialize the process subsystem.
- *
- * TODO: initialize all global locks via spin_init:
- * - wait_lock, run_queue_lock, pid_lock
+ * Called once from kmain before any process is created.
  */
 void
 proc_init(void) {
@@ -352,7 +366,7 @@ proc_init(void) {
 
 void
 idle_thread(void) {
-    intr_on();
+    kthread_start();
     for (;;) {
         asm volatile("wfi");
         yield();
@@ -361,29 +375,25 @@ idle_thread(void) {
 
 /*
  * init_thread — the init process (PID 1).
- * Root of the process tree. Loops calling wait() to reap zombies.
- *
- * TODO:
- * - intr_on()
- * - Loop forever: call wait(&status)
- *   - If pid > 0: print "init: reaped pid %d (status %d)"
- *     (disable interrupts around kprintf)
+ * Root of the process tree. Loops calling wait() to reap zombies forever.
  */
 void
 init_thread(void) {
-    intr_on();
-    int pid;
-    int status;
+    kthread_start();
     for (;;) {
-        pid = wait(&status);
-        if (pid)
-            kprintf("init: reaped pid %d (status %d)", pid, status);
+        int status;
+        int pid = wait(&status);
+        if (pid > 0) {
+            intr_off();
+            kprintf("init: reaped pid %d (status %d)\n", pid, status);
+            intr_on();
+        }
     }
 }
 
 void
 worker(void) {
-    intr_on();
+    kthread_start();
     for (int i = 0; i < 5; i++) {
         intr_off();
         kprintf("[%s] count=%d\n", this_proc()->name, i);
@@ -395,9 +405,8 @@ worker(void) {
 /*
  * proc_bootstrap — create the bootstrap kernel threads.
  *
- * In Phase 6, this becomes: create idle + a single init process that
- * calls exec("/init") to load the user-space init binary. Workers
- * will be spawned by user-space init via fork+exec instead.
+ * In Phase 6, this becomes: create idle + a single init that calls
+ * exec("/init") to load the user-space init binary.
  */
 void
 proc_bootstrap(void) {

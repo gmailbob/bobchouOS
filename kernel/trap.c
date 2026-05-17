@@ -122,13 +122,16 @@ kernel_trap(void) {
 
 /*
  * ret_from_trap — called from kernel_vec after kernel_trap returns.
- * Checks the need_resched flag and yields if set. This is the only
- * place preemptive scheduling happens — kernel_trap itself just sets
- * the flag, keeping the trap handler short and clean.
+ *
+ * Two checks before returning to the interrupted code:
+ * 1. If p->killed is set, the process exits immediately (deferred kill).
+ * 2. If need_resched is set, yield the CPU (timer preemption).
  */
 void
 ret_from_trap(void) {
     struct cpu *c = this_cpu();
+    if (c->proc && c->proc->killed)
+        exit(-1);
     if (c->need_resched && c->proc) {
         c->need_resched = 0;
         yield();

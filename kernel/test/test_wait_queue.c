@@ -37,6 +37,7 @@ test_wait_queue(void) {
     memset(&fake_proc, 0, sizeof(fake_proc));
     spin_init(&fake_proc.lock, "fake");
     INIT_LIST_HEAD(&fake_proc.wait_link);
+    INIT_LIST_HEAD(&fake_proc.run_list);
     fake_proc.state = PROC_SLEEPING;
 
     /* Manually add to queue (simulating what wq_sleep does) */
@@ -56,7 +57,9 @@ test_wait_queue(void) {
     spin_init(&fake2.lock, "fake2");
     spin_init(&fake3.lock, "fake3");
     INIT_LIST_HEAD(&fake2.wait_link);
+    INIT_LIST_HEAD(&fake2.run_list);
     INIT_LIST_HEAD(&fake3.wait_link);
+    INIT_LIST_HEAD(&fake3.run_list);
     fake2.state = PROC_SLEEPING;
     fake3.state = PROC_SLEEPING;
 

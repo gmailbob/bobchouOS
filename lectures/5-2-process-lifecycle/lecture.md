@@ -620,7 +620,7 @@ restores would see 0 (interrupts never re-enabled).
 | `wq->lock` | a specific wait queue's linked list | wq_sleep, wq_wake_one/all |
 | `p->lock` | p->state, p->killed, p->exit_status, PID visibility | scheduler, exit, kill, yield |
 | `run_queue_lock` | run queue list | run_queue_add helper (self-contained) |
-| `pid_lock` | PID counter, PID hash table | alloc_pid, find_proc_by_pid (self-contained) |
+| `pid_lock` | PID counter | alloc_pid (self-contained) |
 
 ### Lock ordering
 
@@ -641,7 +641,7 @@ wait_lock → wq->lock → p->lock
 
 `run_queue_lock` and `pid_lock` are not in this chain — they're always
 acquired and released within helper functions (`run_queue_add`,
-`alloc_pid`, `find_proc_by_pid`), never held while taking another lock.
+`alloc_pid`), never held while taking another lock.
 Self-contained locks don't need ordering.
 
 If you hold `p->lock`, you must NOT try to acquire `wait_lock`. Period.
@@ -1084,11 +1084,17 @@ exit(int status) {
     struct proc *p = this_proc();
     unsigned long flags;
 
-    if (p == init_proc)
-        panic("init exiting");
+    if (p->pid <= 1)
+        panic("idle or init exiting");
 
     spin_lock_irqsave(&wait_lock, &flags);
-    reparent(p);                          // orphans → init
+    /* Reparent children to init */
+    while (!list_empty(&p->children)) {
+        struct proc *child = list_first_entry(&p->children, struct proc, sibling);
+        child->parent = init_proc;
+        list_del(&child->sibling);
+        list_add_tail(&child->sibling, &init_proc->children);
+    }
     wq_wake_one(&p->parent->child_wq);   // wake parent
 
     spin_lock(&p->lock);                  // inner lock (interrupts already off)
@@ -1123,17 +1129,8 @@ frees both in `wait()` — running on its own stack.
 
 ### Reparenting orphans
 
-```c
-static void
-reparent(struct proc *p) {
-    struct proc *child;
-    list_for_each_entry(child, &p->children, sibling) {
-        child->parent = init_proc;
-    }
-    list_splice(&p->children, &init_proc->children);
-}
-```
-
+Reparenting is inlined in `exit()` (the while-loop above). It drains
+`p->children` one by one, moving each child to `init_proc->children`.
 Done under `wait_lock` because it modifies the same parent/children
 pointers that `wait()` traverses.
 
@@ -1175,7 +1172,7 @@ wait(int *status) {
                 if (status)
                     *status = child->exit_status;
                 spin_unlock(&child->lock);
-                freeproc(child);
+                free_proc(child);
                 spin_unlock_irqrestore(&wait_lock, flags);
                 return pid;
             }
@@ -1193,11 +1190,11 @@ wait(int *status) {
 }
 ```
 
-### freeproc — final cleanup
+### free_proc — final cleanup
 
 ```c
 static void
-freeproc(struct proc *p) {
+free_proc(struct proc *p) {
     list_del(&p->sibling);     // parent's children list
     list_del(&p->all_list);    // global all-procs list
     list_del(&p->pid_link);    // PID hash table
@@ -1249,19 +1246,24 @@ added `TASK_KILLABLE` to reduce these situations.)
 ```c
 int
 kill(int pid) {
-    struct proc *p = find_proc_by_pid(pid);
-    unsigned long flags;
-    if (!p) return -1;
+    int bucket = hash_int(pid) & (HT_SIZE(PID_HASH_BITS) - 1);
+    struct proc *p;
+    int found = 0;
 
-    spin_lock_irqsave(&p->lock, &flags);
+    list_for_each_entry(p, &pid_table[bucket], pid_link) {
+        if (p->pid == pid) { found = 1; break; }
+    }
+    if (!found) return -1;
+
+    unsigned long irq;
+    spin_lock_irqsave(&p->lock, &irq);
     p->killed = 1;
     if (p->state == PROC_SLEEPING) {
+        list_del(&p->wait_link);   /* TODO(Phase 9): needs wq->lock */
         p->state = PROC_RUNNABLE;
-        spin_lock(&run_queue_lock);
-        list_add_tail(&p->run_list, &run_queue);
-        spin_unlock(&run_queue_lock);
+        run_queue_add(p);
     }
-    spin_unlock_irqrestore(&p->lock, flags);
+    spin_unlock_irqrestore(&p->lock, irq);
     return 0;
 }
 ```
@@ -1273,11 +1275,11 @@ At safe points — after handling a trap, and in interruptible sleep loops:
 ```c
 // In ret_from_trap:
 void ret_from_trap(void) {
-    struct proc *p = this_proc();
-    if (p->killed)
+    struct cpu *c = this_cpu();
+    if (c->proc && c->proc->killed)
         exit(-1);
-    if (this_cpu()->need_resched) {
-        this_cpu()->need_resched = 0;
+    if (c->need_resched && c->proc) {
+        c->need_resched = 0;
         yield();
     }
 }
@@ -1515,24 +1517,119 @@ This enables the cross-swtch pattern: process acquires, scheduler releases (or v
 | `yield()` | Give up CPU (voluntary or timer-forced) |
 | `sched()` | Internal: swtch to scheduler (must hold p->lock) |
 
-### Lifecycle
+### Lifecycle — state diagram with lock annotations
 
 ```
-                creation
-                    |
-                    v
-    +---------->[RUNNABLE]<-----------+
-    |                |                |
-    |          scheduler picks    wq_wake_one
-    |                |                |
-    |                v                |
-    |            [RUNNING]            |
-    |           /    |    \           |
-    | yield/preempt exit  wq_sleep    |
-    |        |      |        |        |
-    +--------+   [ZOMBIE] [SLEEPING]--+
-                    |
-                wait reaps
-                    |
-                 (freed)
+                        proc_create_kernel [A]
+                                |
+                                v
+    +-------------------->[RUNNABLE]<---------------------+
+    |                           |                         |
+    |                    scheduler [B]               wq_wake_one [F]
+    |                           |                    kill [G]
+    |                           v                         |
+    |                       [RUNNING]                     |
+    |                      /    |    \                    |
+    |              yield [C] exit [E] wq_sleep [D]        |
+    |                  |        |          |              |
+    +------------------+     [ZOMBIE]   [SLEEPING]--------+
+                                |
+                           wait [H]
+                                |
+                             (freed)
 ```
+
+### Lifecycle — detailed lock trace
+
+Each transition shows: function, locks acquired (irq = irqsave, plain = interrupts already off), and who releases.
+
+```
+═══════════════════════════════════════════════════════════════════════
+
+[A] CREATION (proc_create_kernel):
+    pid_lock [plain, self-contained in alloc_pid]
+    run_queue_lock [plain, self-contained in run_queue_add]
+    → state = RUNNABLE, on run queue
+
+═══════════════════════════════════════════════════════════════════════
+
+[B] RUNNABLE → RUNNING (scheduler):
+    acquire: run_queue_lock [plain]        → pick_next, release run_queue_lock
+    acquire: p->lock [plain]               → set RUNNING, swtch to process
+    release: p->lock                       → by PROCESS after swtch
+                                             (kthread_start for new, or
+                                              spin_unlock_irqrestore in yield,
+                                              or spin_lock(lk) path in wq_sleep)
+
+═══════════════════════════════════════════════════════════════════════
+
+[C] RUNNING → RUNNABLE (yield):
+    acquire: p->lock [irq]                 → set RUNNABLE
+    run_queue_add: run_queue_lock [plain, self-contained]
+    sched(): swtch to scheduler            → p->lock crosses boundary
+    release: p->lock                       → by SCHEDULER after swtch returns
+    restore: irq flags via irqrestore
+
+═══════════════════════════════════════════════════════════════════════
+
+[D] RUNNING → SLEEPING (wq_sleep):
+    (caller already holds lk [irq] — e.g. wait_lock)
+    acquire: wq->lock [plain]
+    acquire: p->lock [plain]               → set SLEEPING, add to wq
+    release: lk (condition lock)           → lost wakeup solved
+    release: wq->lock                      → queue consistent
+    sched(): swtch to scheduler            → p->lock crosses boundary
+    release: p->lock                       → by SCHEDULER after swtch returns
+    acquire: lk [plain]                    → re-acquire condition lock (POSIX)
+
+═══════════════════════════════════════════════════════════════════════
+
+[F] SLEEPING → RUNNABLE (wq_wake_one):
+    acquire: wq->lock [irq]                → remove from queue (list_del)
+    acquire: p->lock [plain]               → set RUNNABLE
+    release: p->lock
+    run_queue_add: run_queue_lock [plain, self-contained]
+    release: wq->lock via irqrestore
+
+═══════════════════════════════════════════════════════════════════════
+
+[E] RUNNING → ZOMBIE (exit):
+    acquire: wait_lock [irq, dead flags]   → reparent children, wake parent
+      wq_wake_one internally: wq->lock [irq], p->lock [plain]
+    acquire: p->lock [plain]               → set ZOMBIE, set exit_status
+    release: wait_lock [plain — still hold p->lock]
+    sched(): swtch to scheduler            → p->lock crosses boundary
+    release: p->lock                       → by SCHEDULER (never returns)
+
+═══════════════════════════════════════════════════════════════════════
+
+[H] ZOMBIE → freed (wait):
+    acquire: wait_lock [irq]               → scan children list
+    acquire: child->lock [plain]           → check state
+    release: child->lock                   → if ZOMBIE, proceed to free
+    free_proc: list_del (sibling, all_list, pid_link), kfree, kmfree
+    release: wait_lock via irqrestore
+    return pid
+
+    If no zombie: wq_sleep(&child_wq, &wait_lock)
+      → follows SLEEPING path above (lk = wait_lock)
+
+═══════════════════════════════════════════════════════════════════════
+
+[G] SLEEPING → RUNNABLE via kill():
+    acquire: p->lock [irq]                 → set killed=1
+    list_del(&p->wait_link)                → remove from wait queue (TODO: wq->lock)
+    set RUNNABLE
+    run_queue_add: run_queue_lock [plain, self-contained]
+    release: p->lock via irqrestore
+
+    Process later checks killed in ret_from_trap or sleep loop → exit(-1)
+
+═══════════════════════════════════════════════════════════════════════
+```
+
+**Legend:**
+- `[irq]` = acquired via `spin_lock_irqsave` (saves + disables interrupts)
+- `[plain]` = acquired via `spin_lock` (interrupts already off)
+- `[irq, dead flags]` = irqsave used only to disable interrupts; flags never restored (function doesn't return)
+- `self-contained` = acquired and released within a helper; not in the ordering chain

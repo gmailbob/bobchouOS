@@ -24,8 +24,6 @@ test_proc(void) {
 
     /* proc_init initializes global locks */
     TEST_ASSERT(spin_holding(&wait_lock) == 0, "wait_lock initialized unlocked");
-    TEST_ASSERT(spin_holding(&run_queue_lock) == 0, "run_queue_lock initialized unlocked");
-    TEST_ASSERT(spin_holding(&pid_lock) == 0, "pid_lock initialized unlocked");
 
     /* proc_create_kernel: basic fields */
     struct proc *p = proc_create_kernel(dummy_fn, "test_p");

@@ -68,19 +68,19 @@ struct proc {
     enum proc_state state;
 
     /* --- Scheduling (embedded list nodes) --- */
-    struct list_head all_list;
-    struct list_head run_list;
-    struct list_head pid_link;
+    struct list_head all_list; /* node in global all_procs list */
+    struct list_head run_list; /* node in run queue (only when RUNNABLE) */
+    struct list_head pid_link; /* node in PID hash table bucket */
 
     /* --- Family --- */
     struct proc *parent;
-    struct list_head children;
-    struct list_head sibling;
+    struct list_head children;  /* head of this proc's children list */
+    struct list_head sibling;   /* node in parent->children list */
     struct wait_queue child_wq; /* this proc sleeps here when calling wait() */
 
     /* --- Execution state --- */
-    struct context context;
-    uint64 kstack;
+    struct context context; /* saved callee-regs + ra for swtch */
+    uint64 kstack;          /* base address of kernel stack page */
 
     /* --- Address space (Phase 6) --- */
     pagetable_t pagetable;
@@ -88,9 +88,9 @@ struct proc {
     uint64 sz;
 
     /* --- Lifecycle --- */
-    int killed;
-    int exit_status;
-    struct list_head wait_link; /* for sleeping on a wait queue */
+    int killed;                 /* set by kill(), checked in ret_from_trap and sleep loops */
+    int exit_status;            /* passed to exit(), read by parent in wait() */
+    struct list_head wait_link; /* node on a wait queue (only when SLEEPING) */
 };
 
 /* --- struct cpu --- */

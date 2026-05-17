@@ -116,16 +116,15 @@ Rust's safety guarantees get more valuable as you move up from hardware. Closer 
 
 ### Phase 5 — Processes & Scheduling
 
-- Define `struct proc` — PID, state, kernel stack, page table, trapframe, context
-- Implement intrusive data structures for process management (linked lists, hash table)
-- Create the first process by hand (hardcoded function as its "program")
+- Implement intrusive data structures for process management (doubly-linked list, hash table)
+- Define `struct proc` — PID, state, kernel stack, context, parent-child relationships
 - Implement `swtch()` — assembly routine to save/restore callee-saved registers for context switching
-- Implement a round-robin scheduler driven by timer interrupts
-- Run two processes that print to UART and observe interleaved output
-- Implement spinlocks and sleep/wakeup synchronization primitives
-- Implement `fork()`, `exit()`, `wait()`, and `kill()`
+- Implement a round-robin scheduler driven by timer interrupts (on-demand one-shot via mini-SBI)
+- Run multiple kernel threads with preemptive interleaving on a single hart
+- Implement spinlocks (amoswap, memory fences, irqsave pattern) and wait queues (targeted sleep/wakeup)
+- Implement `exit()`, `wait()`, and `kill()` — full process lifecycle with zombie reaping
 
-> **Milestone:** multiple processes running concurrently with preemptive scheduling; full process lifecycle (fork, run, exit, reap).
+> **Milestone:** multiple processes running concurrently with preemptive scheduling; full process lifecycle (create, run, exit, reap).
 
 ### Phase 6 — User Mode & System Calls
 
@@ -238,16 +237,18 @@ bobchouOS/
 │   ├── 0-3-c-recap/        #   C fundamentals exercises
 │   ├── 1-1-boot-and-linker/
 │   ├── ...                 #   (one directory per round)
-│   └── 5-1-processes-and-scheduling/
+│
 ├── kernel/                 # Kernel source
-│   ├── arch/               #   RISC-V assembly: entry, traps, context switch
+│   ├── arch/               #   RISC-V assembly: entry, traps, context switch, SBI
 │   ├── include/            #   All kernel headers
 │   ├── drivers/            #   UART (future: virtio-blk, PLIC)
 │   ├── lib/                #   kprintf, string utilities
 │   ├── test/               #   Unit tests (run via `make test`)
 │   ├── main.c              #   Kernel entry point
-│   ├── proc.c              #   Process management & scheduler
-│   ├── trap.c              #   Trap dispatcher
+│   ├── proc.c              #   Process management, scheduler, lifecycle
+│   ├── spinlock.c          #   Spinlock (amoswap + irqsave)
+│   ├── wait_queue.c        #   Wait queues (targeted sleep/wakeup)
+│   ├── trap.c              #   Trap dispatcher, ret_from_trap
 │   ├── vm.c                #   Virtual memory
 │   ├── kalloc.c            #   Physical page allocator
 │   └── kmalloc.c           #   Kernel heap allocator
