@@ -18,7 +18,15 @@ struct wait_queue {
     struct list_head head;
 };
 
-void wq_init(struct wait_queue *wq, const char *name);
+/*
+ * wq_init — initialize a wait queue.
+ */
+static inline void
+wq_init(struct wait_queue *wq, const char *name) {
+    spin_init(&wq->lock, name);
+    INIT_LIST_HEAD(&wq->head);
+}
+
 void wq_sleep(struct wait_queue *wq, struct spinlock *lk);
 int wq_wake_one(struct wait_queue *wq);
 void wq_wake_all(struct wait_queue *wq);

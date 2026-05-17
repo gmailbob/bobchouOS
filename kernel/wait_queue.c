@@ -9,20 +9,6 @@
 #include "kprintf.h"
 
 /*
- * wq_init — initialize a wait queue.
- *
- * TODO:
- * - spin_init the embedded lock
- * - INIT_LIST_HEAD the embedded head
- */
-void
-wq_init(struct wait_queue *wq, const char *name) {
-    (void)wq;
-    (void)name;
-    panic("wq_init: not implemented");
-}
-
-/*
  * wq_sleep — sleep on a wait queue, atomically releasing lk.
  *
  * Solves the lost wakeup problem: adds self to queue and marks
@@ -32,23 +18,23 @@ wq_init(struct wait_queue *wq, const char *name) {
  * Lock ordering: caller holds lk → acquire wq->lock → acquire p->lock.
  * Release: lk first (lost wakeup solved), wq->lock second,
  * p->lock crosses into scheduler (golden rule).
- *
- * TODO:
- * - Get current proc via this_proc()
- * - Acquire wq->lock (plain — interrupts already off from caller's irqsave)
- * - Acquire p->lock (plain)
- * - list_add_tail(&p->wait_link, &wq->head)
- * - p->state = PROC_SLEEPING
- * - spin_unlock(lk) — release condition lock, lost wakeup solved
- * - spin_unlock(&wq->lock) — done modifying queue
- * - sched() — switch away, p->lock released by scheduler
- * - On wakeup: spin_lock(lk) — re-acquire condition lock before return
  */
 void
 wq_sleep(struct wait_queue *wq, struct spinlock *lk) {
-    (void)wq;
-    (void)lk;
-    panic("wq_sleep: not implemented");
+    struct proc *p = this_proc();
+
+    spin_lock(&wq->lock);
+    spin_lock(&p->lock);
+    list_add_tail(&p->wait_link, &wq->head);
+    p->state = PROC_SLEEPING;
+
+    // caller holds lock until here, lost wakeup solved
+    // at the same time we must free the lock before give up cpu so the producer can proceed
+    spin_unlock(lk);
+    spin_unlock(&wq->lock); // done modifying queue
+    sched();                // p->lock cross boundry will be released by scheduler
+
+    spin_lock(lk); // POSIX condvar pattern: re-acquires lk
 }
 
 /*
@@ -70,18 +56,42 @@ wq_sleep(struct wait_queue *wq, struct spinlock *lk) {
  */
 int
 wq_wake_one(struct wait_queue *wq) {
-    (void)wq;
-    panic("wq_wake_one: not implemented");
+    uint64 irq;
+    spin_lock_irqsave(&wq->lock, &irq);
+
+    if (list_empty(&wq->head)) {
+        spin_unlock_irqrestore(&wq->lock, irq);
+        return 0;
+    }
+
+    struct proc *p = list_first_entry(&wq->head, struct proc, wait_link);
+    list_del(&p->wait_link);
+
+    spin_lock(&p->lock);
+    p->state = PROC_RUNNABLE;
+    run_queue_add(p);
+    spin_lock(&p->lock);
+
+    spin_unlock_irqrestore(&wq->lock, irq);
+    return 1;
 }
 
 /*
  * wq_wake_all — wake all waiters on the queue.
- *
- * TODO:
- * - Same logic as wq_wake_one but loop until queue is empty
  */
 void
 wq_wake_all(struct wait_queue *wq) {
-    (void)wq;
-    panic("wq_wake_all: not implemented");
+    uint64 irq;
+    spin_lock_irqsave(&wq->lock, &irq);
+
+    while (!list_empty(&wq->head)) {
+        struct proc *p = list_first_entry(&wq->head, struct proc, wait_link);
+        list_del(&p->wait_link);
+        spin_lock(&p->lock);
+        p->state = PROC_RUNNABLE;
+        run_queue_add(p);
+        spin_lock(&p->lock);
+    }
+
+    spin_unlock_irqrestore(&wq->lock, irq);
 }

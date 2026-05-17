@@ -104,8 +104,10 @@ struct cpu {
 /* --- Function declarations --- */
 
 void proc_init(void);
+void proc_bootstrap(void);
 struct proc *proc_create_kernel(void (*fn)(void), const char *name);
 void scheduler(void);
+void run_queue_add(struct proc *p);
 void yield(void);
 void sched(void);
 void exit(int status);
@@ -119,13 +121,5 @@ extern void swtch(struct context *old, struct context *new);
 
 /* Global locks (defined in proc.c). */
 extern struct spinlock wait_lock;
-extern struct spinlock run_queue_lock;
-extern struct spinlock pid_lock;
-extern struct proc *init_proc;
-
-/* Kernel threads (defined in proc.c). */
-void idle_thread(void);
-void init_thread(void);
-void worker(void);
 
 #endif /* PROC_H */

@@ -34,13 +34,13 @@ struct proc *init_proc;
 
 /*
  * alloc_pid — allocate the next PID.
- *
- * TODO: protect with pid_lock (spin_lock/spin_unlock since
- * callers already have interrupts off).
  */
 static int
 alloc_pid(void) {
-    return next_pid++;
+    spin_lock(&pid_lock);
+    int pid = next_pid++;
+    spin_unlock(&pid_lock);
+    return pid;
 }
 
 /* --- Per-CPU accessors --- */
@@ -58,7 +58,12 @@ this_proc(void) {
     panic("this_proc: no current process");
 }
 
-/* --- Internal: switch to scheduler --- */
+void
+run_queue_add(struct proc *p) {
+    spin_lock(&run_queue_lock);
+    list_add_tail(&p->run_list, &run_queue);
+    spin_unlock(&run_queue_lock);
+}
 
 /*
  * sched — switch from current process to scheduler.
@@ -67,8 +72,7 @@ this_proc(void) {
  */
 void
 sched(void) {
-    struct proc *p = this_proc();
-    swtch(&p->context, &this_cpu()->scheduler);
+    swtch(&this_proc()->context, &this_cpu()->scheduler);
 }
 
 /* --- Scheduler --- */
@@ -85,26 +89,28 @@ pick_next(void) {
 /*
  * scheduler — main scheduling loop (never returns).
  *
- * TODO: add locking per the golden rule:
- * - Release prev->lock after swtch returns (process that just yielded)
+ * add locking per the golden rule:
+ * - Release prev->lock after swtch returns
  * - Acquire run_queue_lock around pick_next
  * - Acquire p->lock before setting state and swtch
- * - Track prev so we know whose lock to release next iteration
- *
- * Currently: unlocked version from Round 5-1 (works single-hart without
- * sleep/wakeup, but incorrect once locking is added).
  */
 void
 scheduler(void) {
     struct cpu *c = this_cpu();
 
     for (;;) {
+        spin_lock(&run_queue_lock);
         struct proc *p = pick_next();
+        spin_unlock(&run_queue_lock);
+
+        spin_lock(&p->lock);
         p->state = PROC_RUNNING;
         c->proc = p;
         sbi_set_timer(read_mtime() + TIMER_INTERVAL);
+        // later p will release the lock, do work and then re-lock when crossing swtch
         swtch(&c->scheduler, &p->context);
         c->proc = NULL;
+        spin_unlock(&p->lock);
     }
 }
 
@@ -112,7 +118,7 @@ scheduler(void) {
  * yield — give up the CPU.
  * Called voluntarily by a process, or by ret_from_trap on timer preemption.
  *
- * TODO: add locking per the golden rule:
+ * add locking per the golden rule:
  * - Acquire run_queue_lock (plain — interrupts off from trap or caller)
  * - Acquire p->lock (plain)
  * - Set state RUNNABLE, add to run queue tail
@@ -125,15 +131,16 @@ scheduler(void) {
 void
 yield(void) {
     struct proc *p = this_proc();
+    spin_lock(&p->lock);
+    run_queue_add(p);
     p->state = PROC_RUNNABLE;
-    list_add_tail(&p->run_list, &run_queue);
     swtch(&p->context, &this_cpu()->scheduler);
+    spin_unlock(&p->lock);
 }
 
 /*
  * exit — terminate the current process.
  *
- * TODO:
  * - Panic if init_proc is exiting
  * - Acquire wait_lock (irqsave — outermost)
  * - Reparent children to init_proc:
@@ -148,8 +155,26 @@ yield(void) {
  */
 void
 exit(int status) {
-    (void)status;
-    panic("exit: not implemented");
+    struct proc *p = this_proc();
+    if (p->pid <= 1)
+        panic("idel or init proc exit.");
+
+    unsigned long irq; // dead data, use irq variant just to disable interrupt
+    spin_lock_irqsave(&wait_lock, &irq);
+
+    struct proc *child, *tmp;
+    list_for_each_entry_safe(child, tmp, &p->children, sibling) {
+        child->parent = init_proc;
+        list_del(&child->sibling); // remove child from p->children
+        list_add_tail(&child->sibling, &init_proc->children);
+    }
+
+    wq_wake_one(&p->parent->child_wq);
+    spin_lock(&p->lock);
+    p->exit_status = status;
+    p->state = PROC_ZOMBIE;
+    spin_unlock(&wait_lock);
+    sched();
 }
 
 /*
@@ -178,8 +203,35 @@ exit(int status) {
  */
 int
 wait(int *status) {
-    (void)status;
-    panic("wait: not implemented");
+    struct proc *p = this_proc();
+
+    unsigned long irq;
+    spin_lock_irqsave(&wait_lock, &irq);
+
+    if (list_empty(&p->children)) {
+        spin_unlock_irqrestore(&wait_lock, irq);
+        return -1;
+    }
+
+    struct proc *child;
+    list_for_each_entry(child, &p->children, sibling) {
+        spin_lock(&child->lock);
+        if (child->state == PROC_ZOMBIE) {
+            int pid = child->pid;
+            *status = child->exit_status;
+            list_del(&child->sibling);
+            list_del(&child->all_list);
+            list_del(&child->pid_link);
+            kfree((void *)child->kstack);
+            kmfree(child); // clock also recycled
+            spin_unlock_irqrestore(&wait_lock, irq);
+            return pid;
+        }
+        spin_unlock(&child->lock);
+    }
+
+    wq_sleep(&p->child_wq, &wait_lock);
+    return 0;
 }
 
 /*
@@ -204,8 +256,24 @@ wait(int *status) {
  */
 int
 kill(int pid) {
-    (void)pid;
-    panic("kill: not implemented");
+    int bucket = hash_int(pid) & (HT_SIZE(PID_HASH_BITS) - 1);
+    struct proc *p = NULL;
+    list_for_each_entry(p, &pid_table[bucket], pid_link) {
+        if (p->pid == pid)
+            break;
+    }
+    if (!p)
+        return -1;
+
+    unsigned long irq;
+    spin_lock_irqsave(&p->lock, &irq);
+    p->killed = 1;
+    if (p->state == PROC_SLEEPING) {
+        list_del(&p->wait_link); // TODO: should lock wq
+        p->state = PROC_RUNNABLE;
+    }
+    spin_unlock_irqrestore(&p->lock, irq);
+    return 0;
 }
 
 /* --- Process creation --- */
@@ -232,7 +300,10 @@ proc_create_kernel(void (*fn)(void), const char *name) {
     struct proc *p = kmalloc(sizeof(struct proc));
     memset(p, 0, sizeof(struct proc));
 
+    unsigned long irq;
+    spin_lock_irqsave(&pid_lock, &irq);
     p->pid = alloc_pid();
+    spin_unlock_irqrestore(&pid_lock, irq);
     for (int i = 0; i < PROC_NAME_LEN - 1 && name[i]; i++)
         p->name[i] = name[i];
 
@@ -244,11 +315,17 @@ proc_create_kernel(void (*fn)(void), const char *name) {
     p->context.sp = p->kstack + PG_SIZE;
     p->state = PROC_RUNNABLE;
 
-    /* TODO: init lock, wait queue, children list, wait_link */
-    /* TODO: set parent and link into parent's children */
+    spin_init(&p->lock, name);
+    wq_init(&p->child_wq, name);
+    INIT_LIST_HEAD(&p->children);
+    INIT_LIST_HEAD(&p->wait_link);
+    if (p->pid > 1) {
+        p->parent = init_proc;
+        list_add(&p->sibling, &init_proc->children);
+    }
 
     list_add_tail(&p->all_list, &all_procs);
-    list_add_tail(&p->run_list, &run_queue);
+    run_queue_add(p);
     hash_add(pid_table, &p->pid_link, PID_HASH_BITS, hash_int(p->pid));
 
     return p;
@@ -266,7 +343,9 @@ void
 proc_init(void) {
     hash_init(pid_table, PID_HASH_BITS);
     memset(&cpus[0], 0, sizeof(struct cpu));
-    /* TODO: spin_init for wait_lock, run_queue_lock, pid_lock */
+    spin_init(&wait_lock, "wait_lock");
+    spin_init(&run_queue_lock, "run_queue_lock");
+    spin_init(&pid_lock, "pid_lock");
 }
 
 /* --- Kernel threads --- */
@@ -292,7 +371,14 @@ idle_thread(void) {
  */
 void
 init_thread(void) {
-    panic("init_thread: not implemented");
+    intr_on();
+    int pid;
+    int status;
+    for (;;) {
+        pid = wait(&status);
+        if (pid)
+            kprintf("init: reaped pid %d (status %d)", pid, status);
+    }
 }
 
 void
@@ -304,4 +390,19 @@ worker(void) {
         intr_on();
     }
     exit(0);
+}
+
+/*
+ * proc_bootstrap — create the bootstrap kernel threads.
+ *
+ * In Phase 6, this becomes: create idle + a single init process that
+ * calls exec("/init") to load the user-space init binary. Workers
+ * will be spawned by user-space init via fork+exec instead.
+ */
+void
+proc_bootstrap(void) {
+    proc_create_kernel(idle_thread, "idle");             /* PID 0 */
+    init_proc = proc_create_kernel(init_thread, "init"); /* PID 1 */
+    proc_create_kernel(worker, "worker_a");              /* PID 2 */
+    proc_create_kernel(worker, "worker_b");              /* PID 3 */
 }

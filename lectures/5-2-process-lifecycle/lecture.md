@@ -84,8 +84,8 @@ A process is NOT:
     |                           v                         |
     |                       [RUNNING]                     |
     |                      /    |    \                    |
-    |               yield/   exit()   sleep()             |
-    |              preempt      |          |              |
+    |             yield() /   exit()   sleep()            |
+    |             preempt()     |          |              |
     |                  |        |          v              |
     +------------------+     [ZOMBIE]   [SLEEPING]--------+
                                 |
@@ -288,6 +288,46 @@ amoswap.w  t0, t1, (a0)
 
 This does in ONE atomic step what would otherwise take two (load + store)
 that could be interrupted or interleaved by another hart.
+
+### How the spinlock loop works
+
+The GCC built-in `__sync_lock_test_and_set(&lk->locked, 1)` compiles to
+`amoswap`. The name is misleading — it doesn't "test if setting
+succeeds." It **always performs the swap unconditionally** and **returns
+the old value**:
+
+```c
+int old = __sync_lock_test_and_set(&lk->locked, 1);
+// Atomically: old = lk->locked; lk->locked = 1;
+// The swap ALWAYS happens. The return value tells you what was there before.
+```
+
+| Before swap | After swap | Returns | Meaning |
+|---|---|---|---|
+| `locked = 0` | `locked = 1` | **0** | "Was free → now I hold it" |
+| `locked = 1` | `locked = 1` | **1** | "Was held → I wrote 1 over 1 (no-op), try again" |
+
+The acquire loop:
+```c
+while (__sync_lock_test_and_set(&lk->locked, 1) != 0)
+    ;
+```
+
+Reads as: "keep swapping 1 in. If the old value was 0, I won the lock
+(exit loop). If it was 1, someone else has it (loop, try again)."
+
+On multi-hart, two CPUs can execute `amoswap` simultaneously on the
+same address — but the hardware serializes them (only one sees the
+0→1 transition, the other sees 1→1):
+
+```
+Hart 0:                          Hart 1:
+  amoswap → old=0, set=1          amoswap → old=1, set=1
+  (won! exit loop)                 (lost — old was 1, keep spinning)
+  ... critical section ...         amoswap → old=1, loop...
+  release: locked = 0              amoswap → old=0, set=1
+                                   (won! exit loop)
+```
 
 ### Advisory vs mandatory protection
 
@@ -579,8 +619,8 @@ restores would see 0 (interrupts never re-enabled).
 | `wait_lock` | parent pointer, children/sibling lists (the process tree) | wait, exit, reparent |
 | `wq->lock` | a specific wait queue's linked list | wq_sleep, wq_wake_one/all |
 | `p->lock` | p->state, p->killed, p->exit_status, PID visibility | scheduler, exit, kill, yield |
-| `run_queue_lock` | run queue list | scheduler, yield, wakeup, kill |
-| `pid_lock` | PID counter, PID hash table | proc_create_kernel |
+| `run_queue_lock` | run queue list | run_queue_add helper (self-contained) |
+| `pid_lock` | PID counter, PID hash table | alloc_pid, find_proc_by_pid (self-contained) |
 
 ### Lock ordering
 
@@ -596,8 +636,13 @@ CPU B: lock(p->lock)   → trying lock(wait_lock) ← BLOCKED
 Our order (never violated):
 
 ```
-wait_lock → wq->lock → p->lock → run_queue_lock → pid_lock
+wait_lock → wq->lock → p->lock
 ```
+
+`run_queue_lock` and `pid_lock` are not in this chain — they're always
+acquired and released within helper functions (`run_queue_add`,
+`alloc_pid`, `find_proc_by_pid`), never held while taking another lock.
+Self-contained locks don't need ordering.
 
 If you hold `p->lock`, you must NOT try to acquire `wait_lock`. Period.
 This is a compile-time discipline — no runtime enforcement (though debug
@@ -858,11 +903,7 @@ wq_sleep(struct wait_queue *wq, struct spinlock *lk) {
 
     sched();                  // switch away (p->lock released by scheduler)
 
-    // Woken up — re-acquire condition lock before returning.
-    // Uses plain spin_lock (not irqsave) because interrupts are still
-    // off from the caller's original irqsave. The caller's flags variable
-    // remains valid on its stack and will eventually restore interrupts.
-    spin_lock(lk);
+    spin_lock(lk);            // re-acquire condition lock before returning
 }
 ```
 
@@ -883,12 +924,45 @@ The three locks serve different purposes:
 > know which queue the process is on — a pointer stored in `struct proc` or
 > derivable from the `wait_link` node's list membership.
 
-> **Why `wq_sleep` re-acquires `lk` before returning:** The caller
-> re-checks the condition in a `while` loop after waking. That check
-> requires `lk`. By re-acquiring internally, the caller's lock state is
-> the same before and after — the same pattern as POSIX
-> `pthread_cond_wait(&cond, &mutex)`. (POSIX — Portable Operating System
-> Interface — is the IEEE standard defining the Unix API.)
+### Cross-boundary contracts: a kernel design pattern
+
+`wq_sleep` is not a self-contained function. It has **preconditions and
+postconditions that modify the caller's state**:
+
+- Precondition: caller holds `lk` (acquired via `irqsave` — interrupts off)
+- Side effect: `wq_sleep` releases `lk` (at a precise moment)
+- Side effect: `wq_sleep` re-acquires `lk` before returning (plain
+  `spin_lock`, not `irqsave` — interrupts are still off from the
+  caller's original `irqsave`; the caller's `flags` variable remains
+  valid on its stack and will eventually restore interrupts)
+
+Why re-acquire? The caller re-checks the condition in a `while` loop
+after waking — that check requires `lk`. By re-acquiring internally,
+the caller's lock state is the same before and after the call. This is
+the same pattern as POSIX `pthread_cond_wait(&cond, &mutex)` — the
+standard user-space equivalent. (POSIX — Portable Operating System
+Interface — is the IEEE standard defining the Unix API.)
+
+In application programming, this would be terrible API design — hidden
+side effects on caller state. In kernel code, it's necessary because
+correctness (no lost wakeup) depends on the exact ordering of operations
+that span caller and callee. The function is designed around *how its
+caller must use it*.
+
+This pattern appears throughout the kernel:
+
+| Function | Contract |
+|---|---|
+| `wq_sleep(wq, lk)` | "Caller holds `lk`; I release it, sleep, re-acquire it" |
+| `sched()` | "Caller holds `p->lock`; scheduler releases it on the other side" |
+| `spin_lock_irqsave(lk, &flags)` | "I save YOUR interrupt state into YOUR variable" |
+
+In application code, functions are black boxes — call them, get a result,
+no shared state. In kernel code, functions are **cooperative partners**
+with the caller: they share locks, modify each other's state, and their
+correctness depends on the contract being honored from both sides. This
+is another consequence of locks being advisory — the protocol exists
+only in the programmer's discipline.
 
 ---
 
@@ -1405,8 +1479,9 @@ lock scalability analysis.
 
 **3. Lock ordering (acquisition order, never violated):**
 ```
-wait_lock → wq->lock → p->lock → run_queue_lock → pid_lock
+wait_lock → wq->lock → p->lock
 ```
+(`run_queue_lock` and `pid_lock` are self-contained in helpers — not in the ordering chain.)
 Release order: reverse by default; semantics may override (releasing never causes deadlock, only acquisition order matters).
 
 **4. The golden rule (scheduling):**
@@ -1443,9 +1518,21 @@ This enables the cross-swtch pattern: process acquires, scheduler releases (or v
 ### Lifecycle
 
 ```
-proc_create_kernel(fn)  →  RUNNABLE  →  RUNNING  →  exit()  →  ZOMBIE
-                                ↑            ↓                      ↓
-                          wq_wake_one    wq_sleep            wait() reaps
-                                ↑            ↓                      ↓
-                            RUNNABLE  ←  SLEEPING               (freed)
+                creation
+                    |
+                    v
+    +---------->[RUNNABLE]<-----------+
+    |                |                |
+    |          scheduler picks    wq_wake_one
+    |                |                |
+    |                v                |
+    |            [RUNNING]            |
+    |           /    |    \           |
+    | yield/preempt exit  wq_sleep    |
+    |        |      |        |        |
+    +--------+   [ZOMBIE] [SLEEPING]--+
+                    |
+                wait reaps
+                    |
+                 (freed)
 ```
