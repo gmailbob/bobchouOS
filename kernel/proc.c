@@ -12,9 +12,12 @@
 #include "kalloc.h"
 #include "kmalloc.h"
 #include "kprintf.h"
+#include "mem_layout.h"
 #include "riscv.h"
 #include "sbi.h"
 #include "string.h"
+#include "trapframe.h"
+#include "vm.h"
 
 /* --- Global state --- */
 
@@ -302,7 +305,7 @@ kthread_start(void) {
  * proc_create_kernel — create a new kernel thread.
  *
  * Allocates proc, assigns PID, allocates kstack, sets up context so
- * swtch "returns" into forkret (which releases p->lock, then calls fn).
+ * swtch "returns" into user_proc_start (which releases p->lock, then calls fn).
  * Adds to run queue, all-procs, PID hash table.
  * Parent is init_proc for PID > 1 (NULL for idle/init themselves).
  */
@@ -391,17 +394,6 @@ init_thread(void) {
     }
 }
 
-void
-worker(void) {
-    kthread_start();
-    for (int i = 0; i < 5; i++) {
-        intr_off();
-        kprintf("[%s] count=%d\n", this_proc()->name, i);
-        intr_on();
-    }
-    exit(0);
-}
-
 /*
  * proc_bootstrap — create the bootstrap kernel threads.
  *
@@ -412,6 +404,58 @@ void
 proc_bootstrap(void) {
     proc_create_kernel(idle_thread, "idle");             /* PID 0 */
     init_proc = proc_create_kernel(init_thread, "init"); /* PID 1 */
-    proc_create_kernel(worker, "worker_a");              /* PID 2 */
-    proc_create_kernel(worker, "worker_b");              /* PID 3 */
+    proc_create_user_test();                             /* PID 2 — test user process */
+}
+
+/* --- User process creation (Round 6-1) --- */
+
+/* Embedded test user binary (from user_test_bin.S via .incbin). */
+extern char test_user_bin[];
+extern char test_user_bin_end[];
+
+/* user_trap_ret (defined in trap.c) — entry point for first trip to user mode. */
+void user_trap_ret(void);
+
+/*
+ * user_proc_start — First-time entry stub for user processes.
+ *
+ * Analogous to kthread_start() for kernel threads: releases p->lock
+ * (held across swtch by the scheduler, per the golden rule) then
+ * enters user mode. We can't use kthread_start() because it calls
+ * intr_on() — user processes instead call user_trap_ret() which
+ * manages interrupts and stvec itself.
+ *
+ * context.ra = user_proc_start for new user processes.
+ */
+static void
+user_proc_start(void) {
+    /* TODO: Release p->lock (scheduler held it across swtch).
+     * TODO: Call user_trap_ret() to enter user mode for the first time.
+     */
+}
+
+/*
+ * proc_create_user_test — Create the Round 6-1 test user process.
+ *
+ * Allocates a process, builds its user page table, maps a hardcoded
+ * user program at VA 0x1000, and prepares it for first entry to user mode.
+ *
+ * See Lecture 6-1, Part 5.
+ */
+void
+proc_create_user_test(void) {
+    /* TODO: Allocate process struct (alloc_proc or equivalent).
+     * TODO: Allocate trapframe page via kalloc().
+     * TODO: Create user page table via proc_pagetable(p).
+     * TODO: Allocate a page for user code, copy test_user_bin into it.
+     * TODO: Map user code at VA 0x1000 (PTE_R | PTE_X | PTE_U).
+     * TODO: Allocate user stack page, map at VA 0x3000 (PTE_R | PTE_W | PTE_U).
+     * TODO: Initialize trapframe: epc = 0x1000, sp = 0x4000 (top of stack page).
+     * TODO: Set p->sz = 0x4000.
+     * TODO: Set p->context.ra = (uint64)user_proc_start (first-time entry stub).
+     * TODO: Set p->context.sp = p->kstack + PG_SIZE (kernel stack top).
+     * TODO: Mark RUNNABLE, add to run queue.
+     */
+    (void)test_user_bin;
+    (void)test_user_bin_end;
 }

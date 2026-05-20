@@ -15,7 +15,10 @@
 
 #include "riscv.h"
 #include "kprintf.h"
+#include "mem_layout.h"
 #include "proc.h"
+#include "trapframe.h"
+#include "vm.h"
 
 /* ---- Exception name table ----
  *
@@ -136,4 +139,67 @@ kernel_trap_ret(void) {
         c->need_resched = 0;
         yield();
     }
+}
+
+/* --- User-mode trap handling (Round 6-1) --- */
+
+/* Trampoline symbols (defined in trampoline.S). */
+extern char trampoline[];
+extern char user_vec[];
+extern char user_ret[];
+
+/*
+ * user_trap — Dispatch traps from user mode.
+ *
+ * Called from user_vec after registers are saved to trapframe and
+ * the page table is switched to kernel. This function is pure dispatch:
+ * it identifies the cause and handles it, then falls through to
+ * user_trap_ret for scheduling decisions and return to user mode.
+ *
+ * See Lecture 6-1, Part 7.
+ */
+void
+user_trap(void) {
+    /* TODO: Set stvec to kernel_vec (arm kernel trap handler for nested traps).
+     * TODO: Save sepc to p->trapframe->epc (before yield could overwrite it).
+     * TODO: Dispatch on scause:
+     *   - EXC_ECALL_U: advance epc by 4, enable interrupts, call syscall()
+     *     (For Round 6-1: just print diagnostic and set killed, since
+     *      syscall() doesn't exist yet.)
+     *   - SCAUSE_INTERRUPT | IRQ_S_SOFT: clear SSIP, set need_resched
+     *   - Other exception: print diagnostic, set p->killed = 1
+     * TODO: Call user_trap_ret() — always, regardless of trap type.
+     */
+}
+
+/*
+ * user_trap_ret — Scheduling decisions + return to user mode.
+ *
+ * The single exit point for ALL paths to user mode: syscalls, interrupts,
+ * exceptions, and the first-ever entry to user mode.
+ *
+ * Two phases:
+ *   Phase 1 (scheduling): check killed → exit; check need_resched → yield
+ *   Phase 2 (return setup): disable interrupts, set stvec to trampoline,
+ *     fill trapframe kernel fields, set sstatus/sepc, call user_ret
+ *
+ * Never returns — user_ret ends with sret.
+ *
+ * See Lecture 6-1, Part 7.
+ */
+void
+user_trap_ret(void) {
+    /* TODO: Phase 1 — Scheduling decisions (mirrors kernel_trap_ret).
+     *   - If p->killed: call exit(-1)
+     *   - If need_resched: clear flag, call yield()
+     *
+     * TODO: Phase 2 — Prepare return to user mode.
+     *   - intr_off() (critical window: stvec about to change)
+     *   - Set stvec = TRAMPOLINE + (user_vec - trampoline)
+     *   - Fill trapframe: kernel_satp, kernel_sp, user_trap, hartid
+     *   - Set sstatus: clear SPP (→ U-mode), set SPIE (→ interrupts on after sret)
+     *   - Set sepc = p->trapframe->epc
+     *   - Compute user_satp = MAKE_SATP(p->pagetable)
+     *   - Call user_ret(TRAPFRAME, user_satp) via function pointer at trampoline VA
+     */
 }

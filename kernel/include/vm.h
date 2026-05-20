@@ -83,4 +83,9 @@ void vm_enable_paging(void);
 pte_t *walk(pte_t *root_pt, uint64 va, int alloc);
 int map_pages(pte_t *root_pt, uint64 va, uint64 size, uint64 pa, int perm);
 
+/* User page table management (Round 6-1) */
+struct proc;
+pte_t *proc_pagetable(struct proc *p);
+void proc_free_pagetable(pte_t *pt, uint64 sz);
+
 #endif /* VM_H */

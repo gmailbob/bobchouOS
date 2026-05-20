@@ -907,8 +907,8 @@ code in its own linker section, page-aligned:
 ```ld
     . = ALIGN(4096);
 
-    .text.trampoline : {
-        *(.text.trampoline)
+    .trampoline : {
+        *(.trampoline)
     } :text
 
     . = ALIGN(4096);
@@ -921,6 +921,11 @@ ensures the trampoline occupies exactly one page (it won't share a
 page with other kernel code). `vm_create_kernel_pt()` maps it at VA
 `TRAMPOLINE`, and `proc_pagetable()` maps it at the same VA in each
 user page table.
+
+Note: we use the section name `.trampoline` (not `.text.trampoline`)
+because `.text.trampoline` would match the `*(.text .text.*)` wildcard
+in the main `.text` output section and get grabbed there — losing the
+page-alignment guarantee. The shorter name avoids the conflict.
 
 ---
 
@@ -1258,7 +1263,7 @@ fault), the hardware does three things:
 Then `user_vec` executes (in S-mode, with user page table still active):
 
 ```asm
-.section .text.trampoline
+.section .trampoline
 .globl user_vec
 .align 4
 user_vec:
@@ -1746,7 +1751,7 @@ kernel."
 | `kernel/trap.c` | Add `user_trap()`, `user_trap_ret()` |
 | `kernel/proc.c` | Create test user process, first-entry-to-user glue |
 | `kernel/include/proc.h` | Add `user_trap_ret` declaration if needed |
-| `linker.ld` | Add `.text.trampoline` section (page-aligned) |
+| `linker.ld` | Add `.trampoline` section (page-aligned) |
 | `Makefile` | Build trampoline, user test binary, embed via incbin |
 
 ### Expected output when running

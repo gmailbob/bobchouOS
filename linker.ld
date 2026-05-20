@@ -41,7 +41,14 @@ SECTIONS
         *(.text .text.*)
     } :text
 
+    /* Trampoline page: page-aligned, occupies exactly one page.
+     * Mapped at TRAMPOLINE VA in both kernel and user page tables. */
     . = ALIGN(4096);
+    .trampoline : {
+        *(.trampoline)
+    } :text
+    . = ALIGN(4096);
+
     _text_end = .;
 
     /* Read-only data (string literals, const arrays). */

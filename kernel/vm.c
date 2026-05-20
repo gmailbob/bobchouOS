@@ -19,6 +19,9 @@
 extern char _kernel_start[];
 extern char _text_end[];
 
+/* Trampoline page (defined in trampoline.S, page-aligned by linker). */
+extern char trampoline[];
+
 /* The kernel's own page table, used for all S-mode execution. */
 static pte_t *kernel_root_pt;
 
@@ -124,6 +127,8 @@ vm_create_kernel_pt(void) {
     kvm_map((uint64)_kernel_start, (uint64)_kernel_start, (uint64)_text_end - (uint64)_kernel_start,
             PTE_R | PTE_X);
     kvm_map((uint64)_text_end, (uint64)_text_end, PHYS_STOP - (uint64)_text_end, PTE_R | PTE_W);
+    /* Trampoline: the ONLY non-identity mapping in the kernel PT. */
+    kvm_map(TRAMPOLINE, (uint64)trampoline, PG_SIZE, PTE_R | PTE_X);
     kprintf("vm_create_kernel_pt: page table at %p\n", kernel_root_pt);
 }
 
@@ -146,4 +151,46 @@ vm_enable_paging(void) {
     csrw(satp, MAKE_SATP(kernel_root_pt));
     sfence_vma();
     kprintf("vm_enable_paging: Sv39 enabled\n");
+}
+
+/*
+ * proc_pagetable — Create a per-process user page table.
+ *
+ * Allocates a root page table page and maps:
+ * 1. Trampoline at TRAMPOLINE VA (R-X, no PTE_U)
+ * 2. This process's trapframe at TRAPFRAME VA (R-W, no PTE_U)
+ *
+ * User text and stack are mapped by the caller.
+ * Returns the root page table, or NULL on failure.
+ *
+ * See Lecture 6-1, Part 5.
+ */
+pte_t *
+proc_pagetable(struct proc *p) {
+    /* TODO: Allocate root page table page (kalloc returns zeroed).
+     * TODO: Map trampoline at TRAMPOLINE VA (PTE_R | PTE_X, no PTE_U).
+     * TODO: Map trapframe at TRAPFRAME VA (PTE_R | PTE_W, no PTE_U).
+     * TODO: Return root page table, or NULL (with cleanup) on failure.
+     */
+    (void)p;
+    return NULL;
+}
+
+/*
+ * proc_free_pagetable — Free a user page table (intermediate pages only).
+ *
+ * Walks the 3-level tree and frees intermediate page table pages.
+ * User data pages (text, stack, trapframe) are freed separately.
+ *
+ * See Lecture 6-1, Part 9.
+ */
+void
+proc_free_pagetable(pte_t *pt, uint64 sz) {
+    /* TODO: Recursively walk the page table tree.
+     * TODO: Free intermediate page table pages (level 1 and level 0 tables).
+     * TODO: Free the root page table page.
+     * NOTE: Do NOT free leaf pages (user text, stack) — those are freed elsewhere.
+     */
+    (void)pt;
+    (void)sz;
 }

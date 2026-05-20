@@ -106,6 +106,7 @@ struct cpu {
 void proc_init(void);
 void proc_bootstrap(void);
 struct proc *proc_create_kernel(void (*fn)(void), const char *name);
+void proc_create_user_test(void);
 void scheduler(void);
 void run_queue_add(struct proc *p);
 void yield(void);

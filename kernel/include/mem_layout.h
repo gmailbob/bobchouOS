@@ -24,6 +24,11 @@
 #define QEMU_SHUTDOWN      (_UL(0x100000))        /* QEMU virt "test finisher" MMIO device */
 #define QEMU_SHUTDOWN_PASS (_UL(0x5555))          /* exit QEMU with success */
 #define QEMU_SHUTDOWN_FAIL (_UL(0x3333))          /* exit QEMU with failure */
+
+/* User-mode virtual address space layout (Sv39: 2^39 = 512 GB) */
+#define TRAMPOLINE       (MAX_VA - PG_SIZE)       /* trampoline page (same VA in both PTs) */
+#define TRAPFRAME        (MAX_VA - 2 * PG_SIZE)   /* per-process trapframe (user PT only) */
+#define USER_TEXT_START  (_UL(0x1000))            /* user code starts here (page 0 unmapped) */
 // clang-format on
 
 #endif /* MEM_LAYOUT_H */

@@ -30,6 +30,8 @@ OBJS    = kernel/arch/entry.o \
           kernel/arch/m_vec.o \
           kernel/arch/swtch.o \
           kernel/arch/sbi.o \
+          kernel/arch/trampoline.o \
+          kernel/arch/user_test_bin.o \
           kernel/main.o \
           kernel/trap.o \
           kernel/kalloc.o \
@@ -55,8 +57,21 @@ TEST_OBJS = kernel/test/run_tests.o \
             kernel/test/test_wait_queue.o \
             kernel/test/test_proc.o
 
+OBJCOPY = $(CROSS)objcopy
+
 QEMU    = qemu-system-riscv64
 QFLAGS  = -machine virt -nographic -bios none -kernel $(TARGET)
+
+# ---------- User program build ----------
+
+user/test_user.elf: user/test_user.S user/user.ld
+	$(CC) $(ASFLAGS) -nostdlib -T user/user.ld -o $@ $<
+
+user/test_user.bin: user/test_user.elf
+	$(OBJCOPY) -O binary $< $@
+
+kernel/arch/user_test_bin.o: kernel/arch/user_test_bin.S user/test_user.bin
+	$(AS) $(ASFLAGS) -c -o $@ $<
 
 # ---------- Targets ----------
 
@@ -86,6 +101,6 @@ debug: $(TARGET)
 	$(QEMU) $(QFLAGS) -s -S
 
 clean:
-	rm -f $(OBJS) $(TEST_OBJS) $(TARGET)
+	rm -f $(OBJS) $(TEST_OBJS) $(TARGET) user/test_user.elf user/test_user.bin
 
 .PHONY: all run debug test clean
