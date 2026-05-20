@@ -53,7 +53,7 @@ kernel_vec:
 
     # ---- Call C trap handler, then check if scheduling is needed ----
     call kernel_trap
-    call ret_from_trap
+    call kernel_trap_ret
 
     # ---- Restore all general-purpose registers ----
     ld    x1,    0(sp)    # ra

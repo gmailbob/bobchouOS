@@ -76,7 +76,7 @@ kernel_trap(void) {
             /* Timer tick (forwarded from M-mode via SSIP).
              * Clear SSIP so we don't re-trap on sret. */
             csrw(sip, csrr(sip) & ~SIP_SSIP);
-            /* Set flag; ret_from_trap will yield after we return. */
+            /* Set flag; kernel_trap_ret will yield after we return. */
             if (this_cpu()->proc)
                 this_cpu()->need_resched = 1;
             break;
@@ -121,14 +121,14 @@ kernel_trap(void) {
 }
 
 /*
- * ret_from_trap — called from kernel_vec after kernel_trap returns.
+ * kernel_trap_ret — called from kernel_vec after kernel_trap returns.
  *
  * Two checks before returning to the interrupted code:
  * 1. If p->killed is set, the process exits immediately (deferred kill).
  * 2. If need_resched is set, yield the CPU (timer preemption).
  */
 void
-ret_from_trap(void) {
+kernel_trap_ret(void) {
     struct cpu *c = this_cpu();
     if (c->proc && c->proc->killed)
         exit(-1);

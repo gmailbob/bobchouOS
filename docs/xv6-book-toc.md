@@ -143,7 +143,7 @@ A preview/overview chapter. The syscall API it describes (`fork`, `exec`, `pipe`
 | Traps from user space (4.2) | Phase 6-1 | Trampoline, uservec/userret, trapframe |
 | Calling system calls (4.3) | Phase 6-2 | ecall dispatch, syscall table |
 | System call arguments (4.4) | Phase 6-2 | argint, argaddr, argfd |
-| Traps from kernel space (4.5) | Phase 2-2, 5-1 | kernel_vec, timer interrupt, ret_from_trap |
+| Traps from kernel space (4.5) | Phase 2-2, 5-1 | kernel_vec, timer interrupt, kernel_trap_ret |
 | Page-fault exceptions (4.6) | Phase 6-4 | COW fork, lazy allocation, demand paging |
 
 ### Ch 5 — Interrupts and device drivers → Phase 1, 2, 7, 8

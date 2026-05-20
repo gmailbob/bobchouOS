@@ -130,7 +130,7 @@ scheduler(void) {
 
 /*
  * yield — give up the CPU.
- * Called voluntarily by a process (SIE may be on), or by ret_from_trap
+ * Called voluntarily by a process (SIE may be on), or by kernel_trap_ret
  * on timer preemption (SIE off). Uses irqsave to handle both safely.
  *
  * Postcondition: returns with interrupt state restored.

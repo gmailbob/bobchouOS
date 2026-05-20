@@ -17,7 +17,7 @@ spin_lock_irqsave(struct spinlock *lk, unsigned long *flags) {
     *flags = intr_get();
     intr_off();
 
-    // always performs the swap unconditionally and returns the old value
+    /* amoswap 1 in unconditionally; old value 0 means we won the lock */
     while (__sync_lock_test_and_set(&lk->locked, 1))
         ;
     __sync_synchronize();

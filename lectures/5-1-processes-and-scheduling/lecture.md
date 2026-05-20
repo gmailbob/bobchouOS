@@ -229,7 +229,7 @@ context and a pointer to the currently running process:
 struct cpu {
     struct proc *proc;            // currently running process, or NULL
     struct context scheduler;     // scheduler's saved context
-    int need_resched;             // timer set this; ret_from_trap checks
+    int need_resched;             // timer set this; kernel_trap_ret checks
 };
 ```
 
@@ -1469,10 +1469,10 @@ a console lock that prevents preemption during output.
 > shared mutable state is accessed.** When shared state is involved,
 > you need either `intr_off` (disable preemption) or a lock (future).
 >
-> Note: the `ret_from_trap` design does NOT fix this bug — it only
+> Note: the `kernel_trap_ret` design does NOT fix this bug — it only
 > ensures kernel_trap itself isn't preempted. kprintf runs in process
 > context (not trap context), so it can still be interrupted by a timer
-> that triggers ret_from_trap → yield on the return path.
+> that triggers kernel_trap_ret → yield on the return path.
 
 ### Summary: lessons from the bugs
 
@@ -1496,7 +1496,7 @@ flag and returns via `sret` (which properly restores all state). The
 actual context switch happens later at a well-defined scheduling point.
 xv6 (and we) accept the complexity for simplicity of implementation.
 
-### The better design: `ret_from_trap`
+### The better design: `kernel_trap_ret`
 
 The fundamental constraints that make "swtch before sret" unavoidable:
 1. Only this hart can save its own registers (no instruction to read
@@ -1526,7 +1526,7 @@ still allocated. This is what caused our bugs: kernel_trap's s0 leaks
 into the restore path, SIE state is trapped inside the frozen frame,
 and any non-reentrant code (kprintf) in kernel_trap can be preempted.
 
-**Better approach (ret_from_trap):**
+**Better approach (kernel_trap_ret):**
 
 ```c
 // kernel_trap: just handle the event, set a flag
@@ -1537,8 +1537,8 @@ void kernel_trap(void) {
     ...
 }
 
-// ret_from_trap: separate scheduling decision point
-void ret_from_trap(void) {
+// kernel_trap_ret: separate scheduling decision point
+void kernel_trap_ret(void) {
     if (this_cpu()->need_resched) {
         this_cpu()->need_resched = 0;
         yield();
@@ -1550,7 +1550,7 @@ void ret_from_trap(void) {
 kernel_vec:
     save all regs
     call kernel_trap       # handles event, returns cleanly
-    call ret_from_trap     # checks flag, maybe yields
+    call kernel_trap_ret     # checks flag, maybe yields
     restore all regs
     sret
 ```
@@ -1558,11 +1558,11 @@ kernel_vec:
 The frozen stack becomes:
 
 ```
-B's kernel stack (frozen when preempted via ret_from_trap):
+B's kernel stack (frozen when preempted via kernel_trap_ret):
 +---------------------------+ ← kstack + PG_SIZE (top)
 | kernel_vec frame (256B)   |   all 32 regs saved
 +---------------------------+
-| ret_from_trap frame       |   tiny (just ra)
+| kernel_trap_ret frame       |   tiny (just ra)
 +---------------------------+
 | yield frame               |
 +---------------------------+ ← B's context.sp
@@ -1578,11 +1578,11 @@ suspended C function on the stack.
 |-------|---------------|------------------------|
 | kernel_vec | Save/restore registers | No |
 | kernel_trap | Handle the event, set flags | Only sets a flag |
-| ret_from_trap | Policy decision before returning | Yes — checks flag, calls yield |
+| kernel_trap_ret | Policy decision before returning | Yes — checks flag, calls yield |
 
 **Why the bugs disappear:**
 - **SIE bug:** kernel_trap returns normally, no frozen trap state. Can
-  enable SIE in ret_from_trap before yield, or just rely on sret
+  enable SIE in kernel_trap_ret before yield, or just rely on sret
   restoring SPIE after yield returns.
 - **Register corruption:** kernel_trap finished — its frame is
   deallocated. s0-s11 are whatever kernel_trap's epilogue restored

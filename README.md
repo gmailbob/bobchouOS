@@ -248,7 +248,7 @@ bobchouOS/
 │   ├── proc.c              #   Process management, scheduler, lifecycle
 │   ├── spinlock.c          #   Spinlock (amoswap + irqsave)
 │   ├── wait_queue.c        #   Wait queues (targeted sleep/wakeup)
-│   ├── trap.c              #   Trap dispatcher, ret_from_trap
+│   ├── trap.c              #   Trap dispatcher, kernel_trap_ret
 │   ├── vm.c                #   Virtual memory
 │   ├── kalloc.c            #   Physical page allocator
 │   └── kmalloc.c           #   Kernel heap allocator

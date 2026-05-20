@@ -254,7 +254,7 @@ But now we need to protect *process state* during transitions. Consider:
 ```c
 // What if a timer interrupt fires right here?
 p->state = PROC_RUNNABLE;
-// Timer → ret_from_trap → yield → scheduler sees p is RUNNABLE
+// Timer → kernel_trap_ret → yield → scheduler sees p is RUNNABLE
 // and tries to run it — but we haven't added it to the run queue yet!
 list_add_tail(&p->run_list, &run_queue);
 ```
@@ -539,7 +539,7 @@ the same portability reason. One extra fence instruction per lock/unlock
 ```
 CPU holds spinlock for the run queue
   → timer interrupt fires
-  → ret_from_trap → yield() tries to acquire run queue lock
+  → kernel_trap_ret → yield() tries to acquire run queue lock
   → DEADLOCK — we're spinning waiting for ourselves to release
 ```
 
@@ -1273,8 +1273,8 @@ kill(int pid) {
 At safe points — after handling a trap, and in interruptible sleep loops:
 
 ```c
-// In ret_from_trap:
-void ret_from_trap(void) {
+// In kernel_trap_ret:
+void kernel_trap_ret(void) {
     struct cpu *c = this_cpu();
     if (c->proc && c->proc->killed)
         exit(-1);
@@ -1298,7 +1298,7 @@ forever (waiting for pipe data that will never come). Marking it
 RUNNABLE ensures it gets scheduled, checks `killed`, and exits cleanly.
 
 Maximum latency: depends on scheduling. The process must be scheduled
-and run through `ret_from_trap` to notice the flag. With round-robin
+and run through `kernel_trap_ret` to notice the flag. With round-robin
 and N runnable processes, worst case is up to N × timeslice (every
 other process gets a full turn first).
 
@@ -1350,7 +1350,7 @@ struct proc {
 struct cpu {
     struct proc *proc;         // currently running process, or NULL
     struct context scheduler;  // scheduler's saved context
-    int need_resched;          // timer set this; ret_from_trap checks it
+    int need_resched;          // timer set this; kernel_trap_ret checks it
 };
 ```
 
@@ -1623,7 +1623,7 @@ Each transition shows: function, locks acquired (irq = irqsave, plain = interrup
     run_queue_add: run_queue_lock [plain, self-contained]
     release: p->lock via irqrestore
 
-    Process later checks killed in ret_from_trap or sleep loop → exit(-1)
+    Process later checks killed in kernel_trap_ret or sleep loop → exit(-1)
 
 ═══════════════════════════════════════════════════════════════════════
 ```

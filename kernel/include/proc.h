@@ -10,6 +10,7 @@
 #include "types.h"
 #include "list.h"
 #include "spinlock.h"
+#include "vm.h"
 #include "wait_queue.h"
 
 /* Number of PID hash table buckets (2^PID_HASH_BITS = 64). */
@@ -54,7 +55,6 @@ struct context {
 };
 
 /* Forward declarations for types not yet needed. */
-typedef uint64 *pagetable_t;
 struct trapframe;
 
 /* --- struct proc --- */
@@ -83,12 +83,12 @@ struct proc {
     uint64 kstack;          /* base address of kernel stack page */
 
     /* --- Address space (Phase 6) --- */
-    pagetable_t pagetable;
+    pte_t *pagetable;
     struct trapframe *trapframe;
     uint64 sz;
 
     /* --- Lifecycle --- */
-    int killed;                 /* set by kill(), checked in ret_from_trap and sleep loops */
+    int killed;                 /* set by kill(), checked in kernel_trap_ret and sleep loops */
     int exit_status;            /* passed to exit(), read by parent in wait() */
     struct list_head wait_link; /* node on a wait queue (only when SLEEPING) */
 };
