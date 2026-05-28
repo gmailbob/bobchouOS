@@ -20,7 +20,7 @@
 #endif
 
 /* Trap vector (defined in kernel_vec.S). */
-extern void kernel_vec(void);
+extern char kernel_vec[];
 
 /* Linker-provided symbols (see linker.ld). */
 extern char _kernel_start[];

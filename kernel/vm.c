@@ -14,13 +14,15 @@
 #include "kprintf.h"
 #include "kalloc.h"
 #include "vm.h"
+#include "proc.h"
 
 /* Linker-provided symbols (see linker.ld). */
 extern char _kernel_start[];
 extern char _text_end[];
 
-/* Trampoline page (defined in trampoline.S, page-aligned by linker). */
-extern char trampoline[];
+/* Trampoline entry points (defined in trampoline.S, page-aligned by linker). */
+extern char user_vec[];
+extern char user_ret[];
 
 /* The kernel's own page table, used for all S-mode execution. */
 static pte_t *kernel_root_pt;
@@ -128,7 +130,7 @@ vm_create_kernel_pt(void) {
             PTE_R | PTE_X);
     kvm_map((uint64)_text_end, (uint64)_text_end, PHYS_STOP - (uint64)_text_end, PTE_R | PTE_W);
     /* Trampoline: the ONLY non-identity mapping in the kernel PT. */
-    kvm_map(TRAMPOLINE, (uint64)trampoline, PG_SIZE, PTE_R | PTE_X);
+    kvm_map(TRAMPOLINE, (uint64)user_vec, PG_SIZE, PTE_R | PTE_X);
     kprintf("vm_create_kernel_pt: page table at %p\n", kernel_root_pt);
 }
 
@@ -167,13 +169,20 @@ vm_enable_paging(void) {
  */
 pte_t *
 proc_pagetable(struct proc *p) {
-    /* TODO: Allocate root page table page (kalloc returns zeroed).
-     * TODO: Map trampoline at TRAMPOLINE VA (PTE_R | PTE_X, no PTE_U).
-     * TODO: Map trapframe at TRAPFRAME VA (PTE_R | PTE_W, no PTE_U).
-     * TODO: Return root page table, or NULL (with cleanup) on failure.
+    /*
+     * Return root page table, or NULL (with cleanup) on failure.
      */
-    (void)p;
-    return NULL;
+    pte_t *user_root_pt = (pte_t *)kalloc();
+    if (!user_root_pt)
+        return NULL;
+    int fail = 0;
+    fail |= map_pages(user_root_pt, TRAMPOLINE, (uint64)user_vec, PG_SIZE, PTE_R | PTE_X);
+    fail |= map_pages(user_root_pt, TRAPFRAME, (uint64)p->trapframe, PG_SIZE, PTE_R | PTE_W);
+    if (fail) {
+        proc_free_pagetable(user_root_pt, PG_SIZE);
+        return NULL;
+    }
+    return user_root_pt;
 }
 
 /*
@@ -185,12 +194,23 @@ proc_pagetable(struct proc *p) {
  * See Lecture 6-1, Part 9.
  */
 void
-proc_free_pagetable(pte_t *pt, uint64 sz) {
-    /* TODO: Recursively walk the page table tree.
-     * TODO: Free intermediate page table pages (level 1 and level 0 tables).
-     * TODO: Free the root page table page.
-     * NOTE: Do NOT free leaf pages (user text, stack) — those are freed elsewhere.
+proc_free_pagetable(pte_t *root, uint64 sz) {
+    for (int i = 0; i < PG_SIZE / sizeof(pte_t); i++) {
+        if (!root[i])
+            continue;
+        pte_t *lv1 = (pte_t *)pte_to_pa(root[i]);
+        for (int j = 0; j < PG_SIZE / sizeof(pte_t); j++) {
+            if (!lv1[j])
+                continue;
+            kfree((void *)pte_to_pa(lv1[j]));
+        }
+        kfree(lv1);
+    }
+    kfree(root);
+    /* Recursively walk the page table tree.
+     * Free intermediate page table pages (level 1 and level 0 tables).
+     * Free the root page table page.
+     * Do NOT free leaf pages (user text, stack) — those are freed elsewhere.
      */
-    (void)pt;
     (void)sz;
 }

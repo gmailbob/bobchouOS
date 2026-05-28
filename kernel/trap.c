@@ -79,7 +79,6 @@ kernel_trap(void) {
             /* Timer tick (forwarded from M-mode via SSIP).
              * Clear SSIP so we don't re-trap on sret. */
             csrw(sip, csrr(sip) & ~SIP_SSIP);
-            /* Set flag; kernel_trap_ret will yield after we return. */
             if (this_cpu()->proc)
                 this_cpu()->need_resched = 1;
             break;
@@ -107,14 +106,10 @@ kernel_trap(void) {
         case EXC_BREAKPOINT:
             kprintf("kernel_trap: %s at %p\n", name, (void *)sepc_val);
             csrw(sepc, sepc_val + inst_len);
-            return;
+            break;
 
-        case EXC_ECALL_S:
-            kprintf("kernel_trap: %s at %p\n", name, (void *)sepc_val);
-            csrw(sepc, sepc_val + 4); /* ecall is always 4 bytes */
-            return;
-
-            /* EXC_ECALL_U: syscall from user process — Phase 6 */
+            /* EXC_ECALL_S never reaches here — hardware routes S-mode ecall
+             * directly to M-mode (see entry.S Step 7: medeleg). */
 
         default:
             panic("kernel_trap: %s  scause=%p sepc=%p stval=%p", name, (void *)scause_val,
@@ -143,11 +138,14 @@ kernel_trap_ret(void) {
 
 /* --- User-mode trap handling (Round 6-1) --- */
 
+/* Kernel trap vector (defined in kernel_vec.S). */
+extern char kernel_vec[];
+
 /* Trampoline symbols (defined in trampoline.S). */
-extern char trampoline[];
 extern char user_vec[];
 extern char user_ret[];
 
+void user_trap_ret(void);
 /*
  * user_trap — Dispatch traps from user mode.
  *
@@ -160,16 +158,48 @@ extern char user_ret[];
  */
 void
 user_trap(void) {
-    /* TODO: Set stvec to kernel_vec (arm kernel trap handler for nested traps).
-     * TODO: Save sepc to p->trapframe->epc (before yield could overwrite it).
-     * TODO: Dispatch on scause:
-     *   - EXC_ECALL_U: advance epc by 4, enable interrupts, call syscall()
-     *     (For Round 6-1: just print diagnostic and set killed, since
-     *      syscall() doesn't exist yet.)
-     *   - SCAUSE_INTERRUPT | IRQ_S_SOFT: clear SSIP, set need_resched
-     *   - Other exception: print diagnostic, set p->killed = 1
-     * TODO: Call user_trap_ret() — always, regardless of trap type.
-     */
+    csrw(stvec, (uint64)kernel_vec);
+
+    uint64 sepc_val = csrr(sepc);
+    uint64 scause_val = csrr(scause);
+    uint64 sstatus_val = csrr(sstatus);
+    uint64 code = scause_val & 0xff;
+
+    struct proc *p = this_proc();
+    p->trapframe->epc = sepc_val;
+
+    if (sstatus_val & SSTATUS_SPP)
+        panic("user_trap: not from U-mode");
+    if (sstatus_val & SSTATUS_SIE)
+        panic("user_trap: interrupts enabled during trap");
+
+    if (scause_val & SCAUSE_INTERRUPT) {
+        switch (code) {
+        case IRQ_S_SOFT:
+            csrw(sip, csrr(sip) & ~SIP_SSIP);
+            this_cpu()->need_resched = 1;
+            break;
+        default:
+            kprintf("user_trap: unexpected interrupt code=%d", (int)code);
+            p->killed = 1;
+            break;
+        }
+    } else {
+        switch (code) {
+        case EXC_ECALL_U:
+            p->trapframe->epc += 4;
+            kprintf("mimic syscall");
+            intr_on();
+            p->killed = 1;
+            break;
+        default:
+            kprintf("user_trap: unexpected exception code=%d", (int)code);
+            p->killed = 1;
+            break;
+        }
+    }
+
+    user_trap_ret(); /* never returns */
 }
 
 /*
@@ -189,17 +219,22 @@ user_trap(void) {
  */
 void
 user_trap_ret(void) {
-    /* TODO: Phase 1 — Scheduling decisions (mirrors kernel_trap_ret).
-     *   - If p->killed: call exit(-1)
-     *   - If need_resched: clear flag, call yield()
-     *
-     * TODO: Phase 2 — Prepare return to user mode.
-     *   - intr_off() (critical window: stvec about to change)
-     *   - Set stvec = TRAMPOLINE + (user_vec - trampoline)
-     *   - Fill trapframe: kernel_satp, kernel_sp, user_trap, hartid
-     *   - Set sstatus: clear SPP (→ U-mode), set SPIE (→ interrupts on after sret)
-     *   - Set sepc = p->trapframe->epc
-     *   - Compute user_satp = MAKE_SATP(p->pagetable)
-     *   - Call user_ret(TRAPFRAME, user_satp) via function pointer at trampoline VA
-     */
+    struct cpu *c = this_cpu();
+    struct proc *p = c->proc;
+    if (p->killed)
+        exit(-1);
+    if (c->need_resched) {
+        c->need_resched = 0;
+        yield();
+    }
+
+    intr_off();
+    csrw(stvec, TRAMPOLINE);
+    /* set to tp register when supporting multi hart */
+    p->trapframe->hartid = 0;
+    csrw(sstatus, csrr(sstatus) & ~SSTATUS_SPP | SSTATUS_SPIE);
+    csrw(sepc, p->trapframe->epc);
+
+    uint64 fn = (uint64)user_ret - (uint64)user_vec + TRAMPOLINE;
+    ((void (*)(uint64, uint64))fn)(TRAPFRAME, MAKE_SATP(p->pagetable));
 }

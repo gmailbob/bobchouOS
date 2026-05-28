@@ -352,11 +352,20 @@ which swaps `a0` with `sscratch` — but `sscratch` holds the user's
 old `a0` (not a trapframe pointer), so the subsequent `sd`
 instructions would write to an invalid address — crash.
 
+**Why can traps arrive during user code at all?** `sstatus.SIE`
+controls S-mode interrupts only when the CPU is *in* S-mode. When the
+CPU is in U-mode, S-mode interrupts are **always enabled regardless
+of SIE** — the same rule we saw in Lecture 2-3 for M-mode interrupts
+from S-mode ("interrupts destined for a higher privilege level are
+always taken from a lower privilege level"). So a pending SSIP (timer
+forwarded from M-mode) immediately traps to S-mode even though user
+code never called `intr_on()`.
+
 **What about the other phases?** During `user_vec`, `user_ret`, and
-`user_trap_ret`, interrupts are **disabled** — RISC-V automatically
-clears `sstatus.SIE` on trap entry, and `user_trap_ret` explicitly
-calls `intr_off()`. No trap can fire during these phases, so the
-stvec value is irrelevant.
+`user_trap_ret`, the CPU is in S-mode and interrupts are **disabled**
+— RISC-V automatically clears `sstatus.SIE` on trap entry, and
+`user_trap_ret` explicitly calls `intr_off()`. No trap can fire
+during these phases, so the stvec value is irrelevant.
 
 The only phase where a nested trap *can* arrive is during `user_trap`
 / syscall processing, where we explicitly re-enable interrupts with
@@ -914,9 +923,9 @@ code in its own linker section, page-aligned:
     . = ALIGN(4096);
 ```
 
-The trampoline's physical address is known via the `.globl trampoline`
+The trampoline's physical address is known via the `.globl user_vec`
 label at the top of `trampoline.S` (declared in C as
-`extern char trampoline[]`). The page-alignment before and after
+`extern char user_vec[]`). The page-alignment before and after
 ensures the trampoline occupies exactly one page (it won't share a
 page with other kernel code). `vm_create_kernel_pt()` maps it at VA
 `TRAMPOLINE`, and `proc_pagetable()` maps it at the same VA in each
@@ -990,8 +999,18 @@ directly — it's already covered.
 
 | Page | Kernel PT mapping | How |
 |------|---|---|
-| Trampoline | Non-identity: VA `TRAMPOLINE` → PA `trampoline` | Explicit new `kvm_map` (the only non-identity entry) |
+| Trampoline | Non-identity: VA `TRAMPOLINE` → PA of user_vec | Explicit new `kvm_map` |
 | Trapframe | Identity: VA = PA (in DRAM) | Implicitly covered by `_text_end..PHYS_STOP` range |
+
+Note: the trampoline physical page is actually **double-mapped** in
+the kernel PT — once at TRAMPOLINE VA (the explicit mapping above),
+and once at its identity-mapped address (covered by the
+`_kernel_start..text_end` R-X range, since it's part of the kernel
+binary). Both VAs resolve to the same physical page. The identity-mapped
+address is what `extern char user_vec[]` gives you in C (the
+linker assigns the physical/identity address to symbols). The
+TRAMPOLINE VA is what we must use when *calling* `user_ret`, because
+that's the VA that survives the page table switch into user PT.
 
 ### proc_pagetable() — creating the user page table
 
@@ -1364,9 +1383,10 @@ user_vec:
    sees the new `satp` value. Without this, stale TLB entries from the
    user page table could cause incorrect translations.
 
-4. **jr t1 (not call)**: we jump directly, no `call`. The return from
-   `user_trap` will go through `user_trap_ret()` → `user_ret`, not back
-   here. This is a one-way trip.
+4. **jr t1 (not call)**: we jump directly, no `call`. `call` would
+   work functionally (ra is free at this point), but `jr` makes the
+   intent explicit: this is a one-way trip. `user_trap` never returns
+   here — it exits through `user_trap_ret` → `user_ret` → `sret`.
 
 ### user_ret: returning to user mode
 
@@ -1575,7 +1595,7 @@ void user_trap_ret(void) {
 
     // 4. Set stvec to the trampoline's user_vec.
     //    Next trap from user mode will land here.
-    csrw(stvec, TRAMPOLINE + (user_vec - trampoline));
+    csrw(stvec, TRAMPOLINE);
 
     // 5. Prepare trapframe fields for next trap.
     p->trapframe->kernel_satp = csrr(satp);   // current kernel PT
@@ -1584,8 +1604,16 @@ void user_trap_ret(void) {
     p->trapframe->hartid = /* tp */ read_tp();
 
     // 6. Set up sstatus for sret.
-    //    Clear SPP (sret returns to U-mode, not S-mode).
-    //    Set SPIE (sret will re-enable interrupts via SIE = SPIE).
+    //    kernel_vec doesn't need to touch sstatus because its trap/sret is
+    //    a clean round-trip: hardware saves SPP/SPIE on entry, restores on
+    //    sret, nothing in between modifies them.
+    //    Our path is different: between the original user trap and this sret,
+    //    we've done intr_on()/intr_off(), nested traps, and context switches.
+    //    Example: a timer interrupt during syscall sets SPP=1 (trapped from
+    //    S-mode) — overwriting the original SPP=0 from the user trap.
+    //    Both fields may hold wrong values. So we force them:
+    //    - Clear SPP → sret returns to U-mode (not S-mode)
+    //    - Set SPIE → sret enables interrupts (SIE = SPIE on sret)
     uint64 sstatus_val = csrr(sstatus);
     sstatus_val &= ~SSTATUS_SPP;   // clear SPP → return to U-mode
     sstatus_val |= SSTATUS_SPIE;   // set SPIE → interrupts on after sret
@@ -1600,7 +1628,7 @@ void user_trap_ret(void) {
     // 9. Jump to user_ret (in the trampoline).
     //    Pass TRAPFRAME VA in a0 (base pointer), user_satp in a1.
     //    user_ret will switch satp, restore regs, and sret.
-    uint64 fn = TRAMPOLINE + (user_ret - trampoline);
+    uint64 fn = TRAMPOLINE + (user_ret - user_vec);
     ((void (*)(uint64, uint64))fn)(TRAPFRAME, user_satp);
 }
 ```
