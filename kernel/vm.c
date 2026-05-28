@@ -169,9 +169,6 @@ vm_enable_paging(void) {
  */
 pte_t *
 proc_pagetable(struct proc *p) {
-    /*
-     * Return root page table, or NULL (with cleanup) on failure.
-     */
     pte_t *user_root_pt = (pte_t *)kalloc();
     if (!user_root_pt)
         return NULL;
@@ -195,22 +192,18 @@ proc_pagetable(struct proc *p) {
  */
 void
 proc_free_pagetable(pte_t *root, uint64 sz) {
+    /* Walk the 3-level tree, freeing level-0 and level-1 table pages.
+     * Does NOT free leaf pages (user text, stack) — those are freed by caller. */
     for (int i = 0; i < PG_SIZE / sizeof(pte_t); i++) {
-        if (!root[i])
+        if (!(root[i] & PTE_V))
             continue;
         pte_t *lv1 = (pte_t *)pte_to_pa(root[i]);
         for (int j = 0; j < PG_SIZE / sizeof(pte_t); j++) {
-            if (!lv1[j])
-                continue;
-            kfree((void *)pte_to_pa(lv1[j]));
+            if (lv1[j] & PTE_V)
+                kfree((void *)pte_to_pa(lv1[j])); /* free level-0 table page */
         }
-        kfree(lv1);
+        kfree(lv1); /* free level-1 table page */
     }
-    kfree(root);
-    /* Recursively walk the page table tree.
-     * Free intermediate page table pages (level 1 and level 0 tables).
-     * Free the root page table page.
-     * Do NOT free leaf pages (user text, stack) — those are freed elsewhere.
-     */
+    kfree(root); /* free root (level-2) page */
     (void)sz;
 }

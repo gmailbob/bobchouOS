@@ -196,6 +196,8 @@ free_proc(struct proc *p) {
     list_del(&p->sibling);
     list_del(&p->all_list);
     list_del(&p->pid_link);
+    /* TODO(Round 6-3): free user resources — trapframe page, user code/stack
+     * pages, and page table (proc_free_pagetable). Kernel procs have none. */
     kfree((void *)p->kstack);
     kmfree(p);
 }
@@ -432,9 +434,6 @@ static void
 user_proc_start(void) {
     spin_unlock(&this_proc()->lock);
     user_trap_ret();
-    /* elease p->lock (scheduler held it across swtch).
-     * Call user_trap_ret() to enter user mode for the first time.
-     */
 }
 
 /*
@@ -459,12 +458,12 @@ proc_create_user_test(void) {
     if (!p->kstack)
         panic("proc_create_user_test: kalloc failed");
 
-    /* Context: swtch will "ret" into fn. fn must call kthread_start()
-     * as its first action (releases p->lock + enables interrupts). */
+    /* Context: swtch will "ret" into user_proc_start, which releases
+     * p->lock and calls user_trap_ret to enter user mode. */
     p->context.ra = (uint64)user_proc_start;
     p->context.sp = p->kstack + PG_SIZE;
 
-    /* Initialize new 5-2 fields */
+    /* Synchronization and lifecycle */
     spin_init(&p->lock, "test");
     wq_init(&p->child_wq, "test");
     INIT_LIST_HEAD(&p->children);
@@ -489,13 +488,15 @@ proc_create_user_test(void) {
     if (!user_code)
         panic("failed to load user_code");
     memcpy(user_code, test_user_bin, (uint64)test_user_bin_end - (uint64)test_user_bin);
-    map_pages(p->pagetable, USER_TEXT_START, PG_SIZE, (uint64)user_code, PTE_R | PTE_X | PTE_U);
+    if (map_pages(p->pagetable, USER_TEXT_START, PG_SIZE, (uint64)user_code, PTE_R | PTE_X | PTE_U))
+        panic("proc_create_user_test: map user code failed");
 
     /* User stack */
     void *user_stack = kalloc();
     if (!user_stack)
-        panic("failed to alloc user stack");
-    map_pages(p->pagetable, 0x3000, PG_SIZE, (uint64)user_stack, PTE_R | PTE_W | PTE_U);
+        panic("proc_create_user_test: alloc user stack failed");
+    if (map_pages(p->pagetable, 0x3000, PG_SIZE, (uint64)user_stack, PTE_R | PTE_W | PTE_U))
+        panic("proc_create_user_test: map user stack failed");
 
     /* Trapframe initial state for first entry to user mode */
     p->trapframe->epc = USER_TEXT_START;

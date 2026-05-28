@@ -25,7 +25,7 @@ user_vec:
     #   - satp still points to user page table
     #   - sscratch holds TRAPFRAME VA (set by user_trap_ret)
     #   - all GP registers hold user values
-    csrrw a0, sscratch, a0
+    csrrw a0, sscratch, a0  # a0 = trapframe ptr; sscratch = user a0
     sd    x1,   40(a0)     # ra
     sd    x2,   48(a0)     # sp
     sd    x3,   56(a0)     # gp
@@ -58,27 +58,35 @@ user_vec:
     sd    x30, 272(a0)     # t5
     sd    x31, 280(a0)     # t6
 
+    # Save user a0 (stashed in sscratch by the csrrw above)
     csrr  t0, sscratch
-    sd    t0, 112(a0)
+    sd    t0, 112(a0)      # x10/a0
 
+    # Load kernel bootstrap values from trapframe
     ld    t0, 0(a0)        # kernel_satp
     ld    sp, 8(a0)        # kernel_sp
-    ld    t1, 16(a0)       # user_trap
-    ld    tp, 24(a0)       # hartid
+    ld    t1, 16(a0)       # user_trap (C handler address)
+    ld    tp, 24(a0)       # hartid → tp (for this_cpu())
 
-    csrw  satp, t0;
+    # Switch to kernel page table. The trampoline is mapped at the
+    # same VA in both PTs, so the next fetch succeeds.
+    csrw  satp, t0
     sfence.vma zero, zero
 
-    jr    t1
+    jr    t1               # one-way jump to user_trap (C handler)
 
 .align 4
 user_ret:
     # Arguments (passed by user_trap_ret via calling convention):
-    #   a0 = TRAPFRAME VA (base pointer for register restore)
+    #   a0 = TRAPFRAME VA (base pointer — symmetric with user_vec)
     #   a1 = user page table SATP value
+
+    # Switch to user page table. After this, only trampoline + trapframe
+    # are accessible (both mapped in user PT).
     csrw  satp, a1
     sfence.vma zero, zero
 
+    # Reload sscratch with trapframe VA for the next trap
     csrw  sscratch, a0
     ld    x1,   40(a0)     # ra
     ld    x2,   48(a0)     # sp

@@ -1,16 +1,13 @@
 /*
  * trap.c — S-mode trap dispatcher for bobchouOS.
  *
- * Called from kernel_vec (kernel_vec.S) after registers are saved.
- * Reads scause to determine what happened and dispatches accordingly.
+ * Kernel trap path:
+ *   kernel_vec → kernel_trap (dispatch) → kernel_trap_ret (scheduling)
  *
- * Interrupt handling: timer ticks via SSIP forwarding (Round 2-3).
- * Exception handling: human-readable diagnostics, breakpoint and
- * ecall-from-S-mode recovery (Round 2-4).
+ * User trap path:
+ *   user_vec → user_trap (dispatch) → user_trap_ret (scheduling + sret)
  *
- * Will grow to include usertrap() and devintr() in later phases.
- *
- * Refer to Lectures 2-2, 2-3, and 2-4.
+ * See Lectures 2-2, 2-3, 2-4, and 6-1.
  */
 
 #include "riscv.h"
@@ -68,8 +65,8 @@ kernel_trap(void) {
 
     /* Sanity checks: */
     if (!(sstatus_val & SSTATUS_SPP))
-        panic("kernel_trap: not from S-mode (sepc=%p scause=%p)",
-              (void *)sepc_val, (void *)scause_val);
+        panic("kernel_trap: not from S-mode (sepc=%p scause=%p)", (void *)sepc_val,
+              (void *)scause_val);
     if (sstatus_val & SSTATUS_SIE)
         panic("kernel_trap: interrupts enabled during trap");
 
@@ -157,7 +154,9 @@ extern char kernel_vec[];
 extern char user_vec[];
 extern char user_ret[];
 
+/* Forward declaration (user_trap calls user_trap_ret). */
 void user_trap_ret(void);
+
 /*
  * user_trap — Dispatch traps from user mode.
  *
@@ -170,16 +169,18 @@ void user_trap_ret(void);
  */
 void
 user_trap(void) {
+    /* Arm kernel trap handler for any nested traps (e.g., timer during syscall). */
     csrw(stvec, (uint64)kernel_vec);
 
-    uint64 sepc_val = csrr(sepc);
     uint64 scause_val = csrr(scause);
     uint64 sstatus_val = csrr(sstatus);
     uint64 code = scause_val & 0xff;
 
     struct proc *p = this_proc();
-    p->trapframe->epc = sepc_val;
+    /* Save user PC before yield could overwrite sepc. */
+    p->trapframe->epc = csrr(sepc);
 
+    /* Sanity: user_vec only fires from U-mode with interrupts off. */
     if (sstatus_val & SSTATUS_SPP)
         panic("user_trap: not from U-mode");
     if (sstatus_val & SSTATUS_SIE)
@@ -192,26 +193,29 @@ user_trap(void) {
             this_cpu()->need_resched = 1;
             break;
         default:
-            kprintf("user_trap: unexpected interrupt code=%d", (int)code);
+            kprintf("user_trap: unexpected interrupt code=%d\n", (int)code);
             p->killed = 1;
             break;
         }
     } else {
         switch (code) {
         case EXC_ECALL_U:
+            /* ecall is 4 bytes; advance past it so sret resumes at next insn. */
             p->trapframe->epc += 4;
-            kprintf("user_trap: ecall from user mode, pid=%d, a7=%d, a0=%d\n",
-                    p->pid, (int)p->trapframe->a7, (int)p->trapframe->a0);
+            /* Round 6-2 will dispatch to syscall() here. For now, print and kill. */
+            kprintf("user_trap: ecall from user mode, pid=%d, a7=%d, a0=%d\n", p->pid,
+                    (int)p->trapframe->a7, (int)p->trapframe->a0);
             p->killed = 1;
             break;
         default:
-            kprintf("user_trap: unexpected exception code=%d", (int)code);
+            kprintf("user_trap: exception pid=%d scause=%p sepc=%p stval=%p\n", p->pid,
+                    (void *)scause_val, (void *)p->trapframe->epc, (void *)csrr(stval));
             p->killed = 1;
             break;
         }
     }
 
-    user_trap_ret(); /* never returns */
+    user_trap_ret();
 }
 
 /*
@@ -234,8 +238,9 @@ user_trap_ret(void) {
     struct cpu *c = this_cpu();
     struct proc *p = c->proc;
 
-    /* Phase 1: scheduling decisions (stvec still = kernel_vec here,
-     * so yield/exit can safely take kernel traps) */
+    /* Phase 1: scheduling decisions.
+     * stvec still = kernel_vec here, so yield/exit can safely take
+     * kernel traps. Must happen BEFORE we set stvec to trampoline. */
     if (p->killed)
         exit(-1);
     if (c->need_resched) {
@@ -243,14 +248,16 @@ user_trap_ret(void) {
         yield();
     }
 
-    /* Phase 2: point of no return — set up for user mode.
+    /* Phase 2: point of no return — set up hardware state for user mode.
      * After this, no yields or exits (stvec = trampoline, SPP = 0). */
     intr_off();
-    csrw(stvec, TRAMPOLINE);
-    p->trapframe->hartid = 0;
+    csrw(stvec, TRAMPOLINE);  /* next user trap → user_vec */
+    p->trapframe->hartid = 0; /* Phase 9: read_tp() for multi-hart */
     csrw(sstatus, (csrr(sstatus) & ~SSTATUS_SPP) | SSTATUS_SPIE);
-    csrw(sepc, p->trapframe->epc);
+    csrw(sepc, p->trapframe->epc); /* sret will jump here */
 
+    /* Call user_ret at the TRAMPOLINE VA (not identity-mapped address)
+     * so execution survives the satp switch inside user_ret. */
     uint64 user_satp = MAKE_SATP(p->pagetable);
     uint64 fn = TRAMPOLINE + ((uint64)user_ret - (uint64)user_vec);
     ((void (*)(uint64, uint64))fn)(TRAPFRAME, user_satp);
