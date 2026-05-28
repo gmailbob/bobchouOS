@@ -68,7 +68,8 @@ kernel_trap(void) {
 
     /* Sanity checks: */
     if (!(sstatus_val & SSTATUS_SPP))
-        panic("kernel_trap: not from S-mode");
+        panic("kernel_trap: not from S-mode (sepc=%p scause=%p)",
+              (void *)sepc_val, (void *)scause_val);
     if (sstatus_val & SSTATUS_SIE)
         panic("kernel_trap: interrupts enabled during trap");
 
@@ -124,6 +125,10 @@ kernel_trap(void) {
  * Two checks before returning to the interrupted code:
  * 1. If p->killed is set, the process exits immediately (deferred kill).
  * 2. If need_resched is set, yield the CPU (timer preemption).
+ *
+ * yield() may swtch to a user process whose user_trap_ret modifies
+ * sepc/sstatus. We save/restore these CSRs around yield so kernel_vec's
+ * sret uses the correct values.
  */
 void
 kernel_trap_ret(void) {
@@ -132,7 +137,14 @@ kernel_trap_ret(void) {
         exit(-1);
     if (c->need_resched && c->proc) {
         c->need_resched = 0;
+        /* Save sepc/sstatus: yield may swtch to a user process whose
+         * user_trap_ret modifies these CSRs. When we resume, kernel_vec's
+         * sret needs the original values. */
+        uint64 sepc_saved = csrr(sepc);
+        uint64 sstatus_saved = csrr(sstatus);
         yield();
+        csrw(sepc, sepc_saved);
+        csrw(sstatus, sstatus_saved);
     }
 }
 
@@ -188,8 +200,8 @@ user_trap(void) {
         switch (code) {
         case EXC_ECALL_U:
             p->trapframe->epc += 4;
-            kprintf("mimic syscall");
-            intr_on();
+            kprintf("user_trap: ecall from user mode, pid=%d, a7=%d, a0=%d\n",
+                    p->pid, (int)p->trapframe->a7, (int)p->trapframe->a0);
             p->killed = 1;
             break;
         default:
@@ -221,6 +233,9 @@ void
 user_trap_ret(void) {
     struct cpu *c = this_cpu();
     struct proc *p = c->proc;
+
+    /* Phase 1: scheduling decisions (stvec still = kernel_vec here,
+     * so yield/exit can safely take kernel traps) */
     if (p->killed)
         exit(-1);
     if (c->need_resched) {
@@ -228,13 +243,15 @@ user_trap_ret(void) {
         yield();
     }
 
+    /* Phase 2: point of no return — set up for user mode.
+     * After this, no yields or exits (stvec = trampoline, SPP = 0). */
     intr_off();
     csrw(stvec, TRAMPOLINE);
-    /* set to tp register when supporting multi hart */
     p->trapframe->hartid = 0;
-    csrw(sstatus, csrr(sstatus) & ~SSTATUS_SPP | SSTATUS_SPIE);
+    csrw(sstatus, (csrr(sstatus) & ~SSTATUS_SPP) | SSTATUS_SPIE);
     csrw(sepc, p->trapframe->epc);
 
-    uint64 fn = (uint64)user_ret - (uint64)user_vec + TRAMPOLINE;
-    ((void (*)(uint64, uint64))fn)(TRAPFRAME, MAKE_SATP(p->pagetable));
+    uint64 user_satp = MAKE_SATP(p->pagetable);
+    uint64 fn = TRAMPOLINE + ((uint64)user_ret - (uint64)user_vec);
+    ((void (*)(uint64, uint64))fn)(TRAPFRAME, user_satp);
 }

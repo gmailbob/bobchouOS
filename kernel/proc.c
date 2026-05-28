@@ -413,7 +413,8 @@ proc_bootstrap(void) {
 extern char test_user_bin[];
 extern char test_user_bin_end[];
 
-/* user_trap_ret (defined in trap.c) — entry point for first trip to user mode. */
+/* Defined in trap.c */
+void user_trap(void);
 void user_trap_ret(void);
 
 /*
@@ -475,46 +476,40 @@ proc_create_user_test(void) {
         list_add_tail(&p->sibling, &init_proc->children);
     }
 
-    /* Add to global structures */
-    p->state = PROC_RUNNABLE;
-    list_add_tail(&p->all_list, &all_procs);
-    run_queue_add(p);
-    hash_add(pid_table, &p->pid_link, PID_HASH_BITS, hash_int(p->pid));
-
+    /* Trapframe */
     p->trapframe = (struct trapframe *)kalloc();
     if (!p->trapframe)
         panic("proc_create_user_test: kalloc failed");
 
-    pte_t *pt = proc_pagetable(p);
+    /* User page table */
+    p->pagetable = proc_pagetable(p);
 
-    /* copy test code into page: a mini loader */
+    /* Copy test code into a fresh page (mini loader) */
     void *user_code = kalloc();
     if (!user_code)
         panic("failed to load user_code");
     memcpy(user_code, test_user_bin, (uint64)test_user_bin_end - (uint64)test_user_bin);
-    map_pages(pt, USER_TEXT_START, PG_SIZE, (uint64)user_code, PTE_R | PTE_X | PTE_U);
+    map_pages(p->pagetable, USER_TEXT_START, PG_SIZE, (uint64)user_code, PTE_R | PTE_X | PTE_U);
 
+    /* User stack */
     void *user_stack = kalloc();
     if (!user_stack)
         panic("failed to alloc user stack");
-    map_pages(pt, 0x3000, PG_SIZE, (uint64)user_stack, PTE_R | PTE_X | PTE_U);
+    map_pages(p->pagetable, 0x3000, PG_SIZE, (uint64)user_stack, PTE_R | PTE_W | PTE_U);
 
+    /* Trapframe initial state for first entry to user mode */
     p->trapframe->epc = USER_TEXT_START;
     p->trapframe->sp = 0x4000;
+    p->trapframe->kernel_satp = csrr(satp);
+    p->trapframe->kernel_sp = p->kstack + PG_SIZE;
+    p->trapframe->user_trap = (uint64)user_trap;
+    p->trapframe->hartid = 0;
 
     p->sz = 0x4000;
+
+    /* Add to global structures and run queue */
     p->state = PROC_RUNNABLE;
-    list_add(&run_queue, &p->run_list);
-    /* Allocate process struct (alloc_proc or equivalent).
-     * Allocate trapframe page via kalloc().
-     * Create user page table via proc_pagetable(p).
-     * Allocate a page for user code, copy test_user_bin into it.
-     * Map user code at VA 0x1000 (PTE_R | PTE_X | PTE_U).
-     * Allocate user stack page, map at VA 0x3000 (PTE_R | PTE_W | PTE_U).
-     * Initialize trapframe: epc = 0x1000, sp = 0x4000 (top of stack page).
-     * Set p->sz = 0x4000.
-     * Set p->context.ra = (uint64)user_proc_start (first-time entry stub).
-     * Set p->context.sp = p->kstack + PG_SIZE (kernel stack top).
-     * Mark RUNNABLE, add to run queue.
-     */
+    list_add_tail(&p->all_list, &all_procs);
+    run_queue_add(p);
+    hash_add(pid_table, &p->pid_link, PID_HASH_BITS, hash_int(p->pid));
 }

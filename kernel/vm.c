@@ -176,8 +176,8 @@ proc_pagetable(struct proc *p) {
     if (!user_root_pt)
         return NULL;
     int fail = 0;
-    fail |= map_pages(user_root_pt, TRAMPOLINE, (uint64)user_vec, PG_SIZE, PTE_R | PTE_X);
-    fail |= map_pages(user_root_pt, TRAPFRAME, (uint64)p->trapframe, PG_SIZE, PTE_R | PTE_W);
+    fail |= map_pages(user_root_pt, TRAMPOLINE, PG_SIZE, (uint64)user_vec, PTE_R | PTE_X);
+    fail |= map_pages(user_root_pt, TRAPFRAME, PG_SIZE, (uint64)p->trapframe, PTE_R | PTE_W);
     if (fail) {
         proc_free_pagetable(user_root_pt, PG_SIZE);
         return NULL;

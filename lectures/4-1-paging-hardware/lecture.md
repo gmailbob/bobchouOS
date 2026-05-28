@@ -348,15 +348,20 @@ halves with a giant hole in the middle:
 This is the same user/kernel split that x86-64 uses (with a
 different number of bits). Addresses in the "hole" are non-canonical
 and cause a page fault — a convenient guard between user and kernel
-space.
+space. We define `MAX_VA = (1UL << 38)` — the first invalid address
+in the lower half. Any VA ≥ MAX_VA is in the hole or upper half.
 
 > **Convention vs. requirement:** The hardware *requires* sign
 > extension (it faults on non-canonical addresses), but the
-> user/kernel split is a *convention*. You could put kernel mappings
-> in the lower half. But using the upper half (high addresses) is
-> universal across operating systems because it makes the split
-> trivial: the top bit of the virtual address tells you whether it's
-> a kernel address or a user address.
+> user/kernel split is a *convention*. Most production OSes (Linux,
+> FreeBSD) put user space in the lower half and kernel in the upper
+> half — the top bit of the VA tells you which world it belongs to.
+>
+> bobchouOS is simpler: we put BOTH user and kernel in the lower half.
+> Our kernel is identity-mapped at physical addresses (0x80000000
+> range, well within 2^38). User processes get the low VAs (0x1000+).
+> The trampoline sits at the very top of the lower half (MAX_VA −
+> PG_SIZE). We never use the upper half at all.
 
 ---
 
@@ -1643,7 +1648,7 @@ tests should pass.
 | `pte_to_pa(pte)` | `((pte >> 10) << 12)` | PTE bits → physical addr |
 | `PX(level, va)` | `(va >> (12+9*level)) & 0x1FF` | Extract VPN index |
 | `MAKE_SATP(pt)` | `(8UL<<60) \| ((pt)>>12)` | Build satp value |
-| `MAX_VA` | `(1UL << 39)` | End of Sv39 address space |
+| `MAX_VA` | `(1UL << 38)` | End of usable lower-half Sv39 VA space (bit 38 sign-extension) |
 
 ### Page table walk summary
 

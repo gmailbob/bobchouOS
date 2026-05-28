@@ -329,6 +329,48 @@ handles the cause and sets flags. The return function (`kernel_trap_ret`
 / `user_trap_ret`) makes scheduling decisions — yielding if preempted,
 exiting if killed — before returning to the interrupted code.
 
+### Why kernel_trap_ret must save sepc/sstatus around yield
+
+`kernel_trap_ret` may call `yield()`, which `swtch`-es to the
+scheduler. The scheduler might pick a user process, whose
+`user_trap_ret` writes to `sepc` and `sstatus` (clearing SPP, setting
+SPIE, writing the user PC into sepc). When the scheduler eventually
+switches back to our kernel thread, those CSRs hold wrong values.
+Then `kernel_vec`'s `sret` reads them: `sepc` = some user VA, `SPP` =
+0 → the CPU drops to U-mode at a user address. Crash.
+
+The fix: `kernel_trap_ret` saves both CSRs before yield and restores
+them after:
+
+```c
+uint64 sepc_saved = csrr(sepc);
+uint64 sstatus_saved = csrr(sstatus);
+yield();
+csrw(sepc, sepc_saved);
+csrw(sstatus, sstatus_saved);
+```
+
+**Why only these two?** `sret` depends on exactly two CSRs: `sepc`
+(new PC) and `sstatus` (SPP → new mode, SPIE → new SIE). Other CSRs:
+- `scause`/`stval` — already read into local variables before yield
+- `stvec` — stays `kernel_vec` (user_trap restores it at entry)
+- `satp` — stays as kernel PT (user_ret briefly switches, user_vec
+  switches back)
+
+**Why didn't this matter in Phase 5?** All processes were kernel
+threads — none ever wrote `sepc` or `sstatus`. These CSRs were only
+modified by hardware on trap entry (which sets them correctly) and
+consumed by `sret`. No context switch could corrupt them. Phase 6
+introduced `user_trap_ret` which explicitly writes both CSRs — that's
+the new code path that requires the save/restore.
+
+**Why doesn't swtch.S handle this?** `swtch.S` saves callee-saved GP
+registers (ra, sp, s0–s11) — the C calling convention. CSRs are
+invisible to the compiler and not part of any calling convention. No
+C function saves/restores them. This is a trap-path concern, not a
+context-switch concern — so it lives in `kernel_trap_ret`, not
+`swtch.S`.
+
 ### stvec timeline
 
 `stvec` must point to the right handler at each phase. If a trap
@@ -936,6 +978,16 @@ because `.text.trampoline` would match the `*(.text .text.*)` wildcard
 in the main `.text` output section and get grabbed there — losing the
 page-alignment guarantee. The shorter name avoids the conflict.
 
+The tradeoff: the GNU assembler assigns default flags to well-known
+section name prefixes (`.text*` → `"ax"` allocatable+executable,
+`.data*` → `"wa"` writable+allocatable, `.rodata*` → `"a"`
+allocatable read-only, `.bss*` → `"wa"`). Custom names like
+`.trampoline` get no default flags — so `trampoline.S` must
+explicitly declare `.section .trampoline, "ax"`. Without `"ax"`,
+the section is treated as non-executable data and instruction fetches
+from it fault. (xv6 uses `.text.trampoline` which gets `"ax"` for
+free, at the cost of needing `EXCLUDE_FILE` in the linker script.)
+
 ---
 
 ## Part 5: Address Space, Page Tables & Performance
@@ -943,7 +995,7 @@ page-alignment guarantee. The shorter name avoids the conflict.
 ### User process virtual address space
 
 ```
-0x80_0000_0000  (MAX_VA = 2^39)
+0x40_0000_0000  (MAX_VA = 2^38)
     ┌────────────────────────────────┐
     │ TRAMPOLINE (1 page, R-X)       │ MAX_VA - PG_SIZE
     ├────────────────────────────────┤
@@ -963,6 +1015,16 @@ page-alignment guarantee. The shorter name avoids the conflict.
     └────────────────────────────────┘
 0x0000_0000_0000
 ```
+
+**Why MAX_VA = 2^38 (not 2^39):** recall from Lecture 4-1 (Part 2)
+that Sv39 sign-extends bit 38 — the usable lower-half VAs are
+`0` to `2^38 - 1` only. Addresses from `0x40_0000_0000` to
+`0x7F_FFFF_FFFF` are in the non-canonical "hole" and fault regardless
+of page table content. `MAX_VA = 1UL << 38` is the first invalid
+address. Our TRAMPOLINE (`MAX_VA - PG_SIZE = 0x3F_FFFF_F000`) is the
+highest valid page in the lower half. (Linux puts its trampoline in
+the upper-half canonical range instead — same idea, different half.
+See Lecture 4-1's "Convention vs. requirement" note.)
 
 Key design decisions:
 
@@ -1823,7 +1885,7 @@ no real syscall dispatch.
 
 | Name | Value | Purpose |
 |------|-------|---------|
-| `MAX_VA` | 0x80_0000_0000 (2^39) | Maximum Sv39 virtual address |
+| `MAX_VA` | 0x40_0000_0000 (2^38) | Maximum usable Sv39 VA (lower canonical half) |
 | `TRAMPOLINE` | MAX_VA − PG_SIZE | VA of trampoline page (both PTs) |
 | `TRAPFRAME` | MAX_VA − 2×PG_SIZE | VA of per-proc trapframe (user PT only) |
 | `USER_TEXT_START` | 0x1000 | First page of user code |

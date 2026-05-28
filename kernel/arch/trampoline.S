@@ -14,7 +14,7 @@
 
 #include "riscv.h"
 
-.section .trampoline
+.section .trampoline, "ax"
 .globl user_vec
 .globl user_ret
 .align 4
@@ -112,6 +112,6 @@ user_ret:
     ld    x30, 272(a0)     # t5
     ld    x31, 280(a0)     # t6
 
-    sd    a0,  112(a0)
+    ld    x10, 112(a0)     # a0 (restored last)
 
     sret

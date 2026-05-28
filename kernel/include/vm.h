@@ -73,8 +73,11 @@ pte_flags(pte_t pte) {
  */
 #define PX(level, va) (((uint64)(va) >> (PG_SHIFT + 9 * (level))) & 0x1FF)
 
-/* Maximum virtual address under Sv39 (2^39). */
-#define MAX_VA (1UL << 39)
+/* Maximum usable virtual address under Sv39.
+ * Sv39 sign-extends bit 38: valid VAs are 0..(2^38-1) (lower half)
+ * or 0xFFFFFFC000000000..0xFFFFFFFFFFFFFFFF (upper half).
+ * We use the lower half only, so MAX_VA = 2^38. */
+#define MAX_VA (1UL << 38)
 
 /* ---- Function declarations ---- */
 
