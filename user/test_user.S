@@ -1,18 +1,31 @@
-# user/test_user.S — Minimal test user program for Round 6-1.
+# user/test_user.S — Hello-world user program for Round 6-2.
 #
-# Executes in U-mode. Issues ecall to trap into kernel.
-# Kernel prints the arguments and kills the process.
+# Prints "hello world\n" via write() syscall, then exits cleanly.
 #
-# See Lecture 6-1, Part 8.
+# See Lecture 6-2, Part 9.
+
+#include "syscall_num.h"
 
 .section .text
 .globl _start
 
 _start:
-    li  a7, 0       # syscall number (placeholder — no real dispatch yet)
-    li  a0, 42      # argument (kernel will print this)
-    ecall           # trap into kernel
+    # write(1, msg, 12)
+    li  a7, SYS_write
+    li  a0, 1           # fd = stdout
+    la  a1, msg         # buffer address (user VA)
+    li  a2, 12          # length
+    ecall
 
-    # Should never reach here — kernel kills the process after ecall
+    # exit(0)
+    li  a7, SYS_exit
+    li  a0, 0           # status = 0
+    ecall
+
+    # unreachable
 spin:
     j   spin
+
+.section .rodata
+msg:
+    .ascii "hello world\n"

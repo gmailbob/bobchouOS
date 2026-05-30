@@ -2,7 +2,7 @@
  * proc.c — Process management for bobchouOS.
  *
  * Implements process creation, scheduling, yield, sleep/wakeup,
- * exit, wait, kill, and per-CPU state.
+ * proc_exit, proc_wait, proc_kill, and per-CPU state.
  *
  * See Lectures 5-1 and 5-2.
  */
@@ -18,6 +18,9 @@
 #include "string.h"
 #include "trapframe.h"
 #include "vm.h"
+
+/* Forward declaration (defined in vm.c, only used by proc_create_user_test). */
+pte_t *proc_pagetable(struct proc *p);
 
 /* --- Global state --- */
 
@@ -150,13 +153,13 @@ yield(void) {
 }
 
 /*
- * exit — terminate the current process.
+ * proc_exit — terminate the current process.
  *
  * Reparents children to init, wakes parent, marks ZOMBIE, yields forever.
  * Never returns.
  */
 void
-exit(int status) {
+proc_exit(int status) {
     struct proc *p = this_proc();
 
     if (p->pid <= 1)
@@ -203,7 +206,7 @@ free_proc(struct proc *p) {
 }
 
 /*
- * wait — wait for a child to exit, reap it.
+ * proc_wait — wait for a child to exit, reap it.
  *
  * Returns the child's PID (or -1 if no children exist).
  * Writes child's exit status to *status if non-NULL.
@@ -211,7 +214,7 @@ free_proc(struct proc *p) {
  * Sleeps until a child exits if children exist but none are zombies yet.
  */
 int
-wait(int *status) {
+proc_wait(int *status) {
     struct proc *p = this_proc();
     unsigned long irq;
 
@@ -239,10 +242,10 @@ wait(int *status) {
         }
 
         /* Check killed before sleeping — if we were woken by kill(),
-         * exit instead of sleeping again. */
+         * proc_exit instead of sleeping again. */
         if (p->killed) {
             spin_unlock_irqrestore(&wait_lock, irq);
-            exit(-1);
+            proc_exit(-1);
         }
 
         /* Children exist but no zombie — sleep until one exits */
@@ -252,13 +255,13 @@ wait(int *status) {
 }
 
 /*
- * kill — mark a process for termination.
+ * proc_kill — mark a process for termination.
  *
  * Sets p->killed = 1. If SLEEPING, wakes it so it can notice the flag.
  * Returns 0 on success, -1 if PID not found.
  */
 int
-kill(int pid) {
+proc_kill(int pid) {
     int bucket = hash_int(pid) & (HT_SIZE(PID_HASH_BITS) - 1);
     struct proc *p;
     int found = 0;
@@ -380,14 +383,14 @@ idle_thread(void) {
 
 /*
  * init_thread — the init process (PID 1).
- * Root of the process tree. Loops calling wait() to reap zombies forever.
+ * Root of the process tree. Loops calling proc_wait() to reap zombies forever.
  */
 void
 init_thread(void) {
     kthread_start();
     for (;;) {
         int status;
-        int pid = wait(&status);
+        int pid = proc_wait(&status);
         if (pid > 0) {
             intr_off();
             kprintf("init: reaped pid %d (status %d)\n", pid, status);
@@ -395,6 +398,8 @@ init_thread(void) {
         }
     }
 }
+
+static void proc_create_user_test(void);
 
 /*
  * proc_bootstrap — create the bootstrap kernel threads.
@@ -444,7 +449,7 @@ user_proc_start(void) {
  *
  * See Lecture 6-1, Part 5.
  */
-void
+static void
 proc_create_user_test(void) {
     struct proc *p = kmalloc(sizeof(struct proc));
     memset(p, 0, sizeof(struct proc));

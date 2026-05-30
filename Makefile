@@ -18,10 +18,10 @@ CFLAGS  = -march=rv64imac_zicsr -mabi=lp64 \
           -ffreestanding -nostdlib -mcmodel=medany \
           -Wall -O2 -g \
           -fno-strict-aliasing \
-          -I kernel/include -I kernel
+          -I include -I kernel/include -I kernel
 
 ASFLAGS = -march=rv64imac_zicsr -mabi=lp64 -g \
-          -I kernel/include -I kernel
+          -I include -I kernel/include -I kernel
 
 TARGET  = kernel.elf
 
@@ -38,6 +38,7 @@ OBJS    = kernel/arch/entry.o \
           kernel/vm.o \
           kernel/kmalloc.o \
           kernel/proc.o \
+          kernel/syscall.o \
           kernel/spinlock.o \
           kernel/wait_queue.o \
           kernel/drivers/uart.o \
@@ -64,7 +65,7 @@ QFLAGS  = -machine virt -nographic -bios none -kernel $(TARGET)
 
 # ---------- User program build ----------
 
-user/test_user.elf: user/test_user.S user/user.ld
+user/test_user.elf: user/test_user.S user/user.ld include/syscall_num.h
 	$(CC) $(ASFLAGS) -nostdlib -T user/user.ld -o $@ $<
 
 user/test_user.bin: user/test_user.elf

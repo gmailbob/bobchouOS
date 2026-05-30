@@ -15,7 +15,6 @@
 #include "mem_layout.h"
 #include "proc.h"
 #include "trapframe.h"
-#include "vm.h"
 
 /* ---- Exception name table ----
  *
@@ -131,7 +130,7 @@ void
 kernel_trap_ret(void) {
     struct cpu *c = this_cpu();
     if (c->proc && c->proc->killed)
-        exit(-1);
+        proc_exit(-1);
     if (c->need_resched && c->proc) {
         c->need_resched = 0;
         /* Save sepc/sstatus: yield may swtch to a user process whose
@@ -156,6 +155,9 @@ extern char user_ret[];
 
 /* Forward declaration (user_trap calls user_trap_ret). */
 void user_trap_ret(void);
+
+/* Syscall dispatch (defined in syscall.c). */
+int64 syscall(void);
 
 /*
  * user_trap — Dispatch traps from user mode.
@@ -202,10 +204,8 @@ user_trap(void) {
         case EXC_ECALL_U:
             /* ecall is 4 bytes; advance past it so sret resumes at next insn. */
             p->trapframe->epc += 4;
-            /* Round 6-2 will dispatch to syscall() here. For now, print and kill. */
-            kprintf("user_trap: ecall from user mode, pid=%d, a7=%d, a0=%d\n", p->pid,
-                    (int)p->trapframe->a7, (int)p->trapframe->a0);
-            p->killed = 1;
+            /* TODO: enable interrupts (intr_on) before dispatch */
+            /* TODO: call syscall() and store return value in trapframe->a0 */
             break;
         default:
             kprintf("user_trap: exception pid=%d scause=%p sepc=%p stval=%p\n", p->pid,
@@ -242,7 +242,7 @@ user_trap_ret(void) {
      * stvec still = kernel_vec here, so yield/exit can safely take
      * kernel traps. Must happen BEFORE we set stvec to trampoline. */
     if (p->killed)
-        exit(-1);
+        proc_exit(-1);
     if (c->need_resched) {
         c->need_resched = 0;
         yield();

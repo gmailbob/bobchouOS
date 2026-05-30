@@ -60,6 +60,6 @@ test_proc(void) {
     struct proc *p2 = proc_create_kernel(dummy_fn, "test_p2");
     TEST_ASSERT(p2->pid > p->pid, "alloc_pid: monotonically increasing");
 
-    /* kill on invalid PID returns -1 */
-    TEST_ASSERT(kill(99999) == -1, "kill: invalid PID returns -1");
+    /* proc_kill on invalid PID returns -1 */
+    TEST_ASSERT(proc_kill(99999) == -1, "proc_kill: invalid PID returns -1");
 }

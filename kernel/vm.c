@@ -207,3 +207,48 @@ proc_free_pagetable(pte_t *root, uint64 sz) {
     kfree(root); /* free root (level-2) page */
     (void)sz;
 }
+
+/* --- User memory access (Round 6-2) --- */
+
+/*
+ * copyin — Copy bytes from user virtual address to kernel buffer.
+ *
+ * Walks the user page table to translate each page of srcva, then copies
+ * via the kernel identity map. Validates PTE_V and PTE_U on each page.
+ *
+ * Returns 0 on success, -EFAULT on invalid user address.
+ * See Lecture 6-2, Part 5.
+ */
+int
+copyin(pte_t *pagetable, void *dst, uint64 srcva, uint64 len) {
+    /* TODO: page-at-a-time loop:
+     *   - PGROUNDDOWN(srcva) to get page base
+     *   - walk(pagetable, va_page, 0) to get PTE
+     *   - validate PTE_V and PTE_U (return -EFAULT if bad)
+     *   - compute PA = pte_to_pa(*pte) + offset within page
+     *   - compute chunk size (min of remaining len, bytes left in page)
+     *   - memcpy(dst, (void *)pa, chunk)
+     *   - advance srcva, dst, decrement len
+     */
+    (void)pagetable; (void)dst; (void)srcva; (void)len;
+    return -1;
+}
+
+/*
+ * copyout — Copy bytes from kernel buffer to user virtual address.
+ *
+ * Same as copyin but in reverse. Also checks PTE_W (must not write to
+ * a read-only user page).
+ *
+ * Returns 0 on success, -EFAULT on invalid user address.
+ * See Lecture 6-2, Part 5.
+ */
+int
+copyout(pte_t *pagetable, uint64 dstva, void *src, uint64 len) {
+    /* TODO: same loop as copyin, but:
+     *   - additionally check PTE_W
+     *   - memcpy((void *)pa, src, chunk) (reversed direction)
+     */
+    (void)pagetable; (void)dstva; (void)src; (void)len;
+    return -1;
+}

@@ -106,14 +106,13 @@ struct cpu {
 void proc_init(void);
 void proc_bootstrap(void);
 struct proc *proc_create_kernel(void (*fn)(void), const char *name);
-void proc_create_user_test(void);
 void scheduler(void);
 void run_queue_add(struct proc *p);
 void yield(void);
 void sched(void);
-void exit(int status);
-int wait(int *status);
-int kill(int pid);
+void proc_exit(int status);
+int proc_wait(int *status);
+int proc_kill(int pid);
 struct cpu *this_cpu(void);
 struct proc *this_proc(void);
 
