@@ -222,19 +222,18 @@ proc_free_pagetable(pte_t *root, uint64 sz) {
  */
 int
 copyin(pte_t *pagetable, void *dst, uint64 srcva, uint64 len) {
-    while (len) {
-        uint64 base = PG_ROUND_DOWN(srcva);
-        uint64 offset = srcva - base;
-        pte_t *p = walk(pagetable, base, 0);
-        if ((*p & (PTE_V | PTE_V)) != (PTE_V | PTE_V))
+    while (len > 0) {
+        uint64 va_page = PG_ROUND_DOWN(srcva);
+        pte_t *pte = walk(pagetable, va_page, 0);
+        if (!pte || !(*pte & PTE_V) || !(*pte & PTE_U))
             return -EFAULT;
-        uint64 pa = pte_to_pa(*p) + offset;
-
+        uint64 offset = srcva - va_page;
+        uint64 pa = pte_to_pa(*pte) + offset;
         uint64 n = PG_SIZE - offset;
         if (n > len)
             n = len;
-        memcpy(dst, (const void *)pa, n);
-        dst += n;
+        memcpy(dst, (void *)pa, n);
+        dst = (char *)dst + n;
         srcva += n;
         len -= n;
     }
@@ -252,20 +251,19 @@ copyin(pte_t *pagetable, void *dst, uint64 srcva, uint64 len) {
  */
 int
 copyout(pte_t *pagetable, uint64 dstva, void *src, uint64 len) {
-    while (len) {
-        uint64 base = PG_ROUND_DOWN(dstva);
-        uint64 offset = dstva - base;
-        pte_t *p = walk(pagetable, base, 0);
-        if ((*p & (PTE_V | PTE_V | PTE_W)) != (PTE_V | PTE_V | PTE_W))
+    while (len > 0) {
+        uint64 va_page = PG_ROUND_DOWN(dstva);
+        pte_t *pte = walk(pagetable, va_page, 0);
+        if (!pte || !(*pte & PTE_V) || !(*pte & PTE_U) || !(*pte & PTE_W))
             return -EFAULT;
-        uint64 pa = pte_to_pa(*p) + offset;
-
+        uint64 offset = dstva - va_page;
+        uint64 pa = pte_to_pa(*pte) + offset;
         uint64 n = PG_SIZE - offset;
         if (n > len)
             n = len;
         memcpy((void *)pa, src, n);
         dstva += n;
-        src += n;
+        src = (char *)src + n;
         len -= n;
     }
     return 0;

@@ -225,7 +225,7 @@ user_trap(void) {
  * exceptions, and the first-ever entry to user mode.
  *
  * Two phases:
- *   Phase 1 (scheduling): check killed → exit; check need_resched → yield
+ *   Phase 1 (scheduling): check killed → proc_exit; check need_resched → yield
  *   Phase 2 (return setup): disable interrupts, set stvec to trampoline,
  *     fill trapframe kernel fields, set sstatus/sepc, call user_ret
  *

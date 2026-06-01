@@ -29,7 +29,7 @@
 static int64
 sys_write(void) {
     struct proc *p = this_proc();
-    uint64 fd = (int)p->trapframe->a0;
+    int fd = (int)p->trapframe->a0;
     uint64 uaddr = p->trapframe->a1;
     uint64 len = p->trapframe->a2;
 
@@ -38,21 +38,19 @@ sys_write(void) {
     if (len > 1024)
         return -EINVAL;
 
-    char buf[128];
-    int copied = 0;
-    while (len) {
-        uint64 n = len;
-        if (n > 128)
-            n = 128;
-        int res = copyin(p->pagetable, buf, uaddr, n);
-        if (res)
-            return res;
-        for (int i = 0; i < n; i++)
-            uart_putc(buf[i]);
-        len -= n;
-        copied += n;
+    char kbuf[128];
+    uint64 written = 0;
+    while (written < len) {
+        uint64 n = len - written;
+        if (n > sizeof(kbuf))
+            n = sizeof(kbuf);
+        if (copyin(p->pagetable, kbuf, uaddr + written, n) < 0)
+            return -EFAULT;
+        for (uint64 i = 0; i < n; i++)
+            uart_putc(kbuf[i]);
+        written += n;
     }
-    return copied;
+    return (int64)written;
 }
 
 /*
