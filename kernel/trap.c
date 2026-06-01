@@ -204,8 +204,8 @@ user_trap(void) {
         case EXC_ECALL_U:
             /* ecall is 4 bytes; advance past it so sret resumes at next insn. */
             p->trapframe->epc += 4;
-            /* TODO: enable interrupts (intr_on) before dispatch */
-            /* TODO: call syscall() and store return value in trapframe->a0 */
+            intr_on();
+            p->trapframe->a0 = syscall();
             break;
         default:
             kprintf("user_trap: exception pid=%d scause=%p sepc=%p stval=%p\n", p->pid,
@@ -258,7 +258,6 @@ user_trap_ret(void) {
 
     /* Call user_ret at the TRAMPOLINE VA (not identity-mapped address)
      * so execution survives the satp switch inside user_ret. */
-    uint64 user_satp = MAKE_SATP(p->pagetable);
-    uint64 fn = TRAMPOLINE + ((uint64)user_ret - (uint64)user_vec);
-    ((void (*)(uint64, uint64))fn)(TRAPFRAME, user_satp);
+    uint64 user_ret_va = TRAMPOLINE + ((uint64)user_ret - (uint64)user_vec);
+    ((void (*)(uint64, uint64))user_ret_va)(TRAPFRAME, MAKE_SATP(p->pagetable));
 }

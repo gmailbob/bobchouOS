@@ -15,6 +15,7 @@
 #include "kalloc.h"
 #include "vm.h"
 #include "proc.h"
+#include "errno.h"
 
 /* Linker-provided symbols (see linker.ld). */
 extern char _kernel_start[];
@@ -221,17 +222,23 @@ proc_free_pagetable(pte_t *root, uint64 sz) {
  */
 int
 copyin(pte_t *pagetable, void *dst, uint64 srcva, uint64 len) {
-    /* TODO: page-at-a-time loop:
-     *   - PGROUNDDOWN(srcva) to get page base
-     *   - walk(pagetable, va_page, 0) to get PTE
-     *   - validate PTE_V and PTE_U (return -EFAULT if bad)
-     *   - compute PA = pte_to_pa(*pte) + offset within page
-     *   - compute chunk size (min of remaining len, bytes left in page)
-     *   - memcpy(dst, (void *)pa, chunk)
-     *   - advance srcva, dst, decrement len
-     */
-    (void)pagetable; (void)dst; (void)srcva; (void)len;
-    return -1;
+    while (len) {
+        uint64 base = PG_ROUND_DOWN(srcva);
+        uint64 offset = srcva - base;
+        pte_t *p = walk(pagetable, base, 0);
+        if ((*p & (PTE_V | PTE_V)) != (PTE_V | PTE_V))
+            return -EFAULT;
+        uint64 pa = pte_to_pa(*p) + offset;
+
+        uint64 n = PG_SIZE - offset;
+        if (n > len)
+            n = len;
+        memcpy(dst, (const void *)pa, n);
+        dst += n;
+        srcva += n;
+        len -= n;
+    }
+    return 0;
 }
 
 /*
@@ -245,10 +252,21 @@ copyin(pte_t *pagetable, void *dst, uint64 srcva, uint64 len) {
  */
 int
 copyout(pte_t *pagetable, uint64 dstva, void *src, uint64 len) {
-    /* TODO: same loop as copyin, but:
-     *   - additionally check PTE_W
-     *   - memcpy((void *)pa, src, chunk) (reversed direction)
-     */
-    (void)pagetable; (void)dstva; (void)src; (void)len;
-    return -1;
+    while (len) {
+        uint64 base = PG_ROUND_DOWN(dstva);
+        uint64 offset = dstva - base;
+        pte_t *p = walk(pagetable, base, 0);
+        if ((*p & (PTE_V | PTE_V | PTE_W)) != (PTE_V | PTE_V | PTE_W))
+            return -EFAULT;
+        uint64 pa = pte_to_pa(*p) + offset;
+
+        uint64 n = PG_SIZE - offset;
+        if (n > len)
+            n = len;
+        memcpy((void *)pa, src, n);
+        dstva += n;
+        src += n;
+        len -= n;
+    }
+    return 0;
 }

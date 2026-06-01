@@ -28,12 +28,31 @@
  */
 static int64
 sys_write(void) {
-    /* TODO: read fd, uaddr, len from trapframe */
-    /* TODO: validate fd (only 1 is valid) */
-    /* TODO: validate len (reject negative or > 1024) */
-    /* TODO: loop: copyin chunks into kbuf, uart_putc each byte */
-    /* TODO: return bytes written */
-    return -ENOSYS;
+    struct proc *p = this_proc();
+    uint64 fd = (int)p->trapframe->a0;
+    uint64 uaddr = p->trapframe->a1;
+    uint64 len = p->trapframe->a2;
+
+    if (fd != 1)
+        return -EBADF;
+    if (len > 1024)
+        return -EINVAL;
+
+    char buf[128];
+    int copied = 0;
+    while (len) {
+        uint64 n = len;
+        if (n > 128)
+            n = 128;
+        int res = copyin(p->pagetable, buf, uaddr, n);
+        if (res)
+            return res;
+        for (int i = 0; i < n; i++)
+            uart_putc(buf[i]);
+        len -= n;
+        copied += n;
+    }
+    return copied;
 }
 
 /*
@@ -46,18 +65,18 @@ sys_write(void) {
  */
 static int64
 sys_exit(void) {
-    /* TODO: read status from trapframe */
-    /* TODO: call proc_exit(status) */
+    proc_exit((int)this_proc()->trapframe->a0);
     return 0; /* unreachable */
 }
 
 /* --- Dispatch table --- */
-
+// clang-format off
 static int64 (*syscalls[])(void) = {
     [0]         = 0,
     [SYS_write] = sys_write,
     [SYS_exit]  = sys_exit,
 };
+// clang-format on
 
 /*
  * syscall — dispatch a system call.

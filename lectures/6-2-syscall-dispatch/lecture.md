@@ -178,7 +178,7 @@ sys_write(void) {
     struct proc *p = this_proc();
     int fd       = (int)p->trapframe->a0;
     uint64 uaddr = p->trapframe->a1;
-    int len      = (int)p->trapframe->a2;
+    uint64 len   = p->trapframe->a2;
     // ... validate and execute ...
 }
 ```
@@ -415,32 +415,33 @@ sys_write(void) {
     struct proc *p = this_proc();
     int fd       = (int)p->trapframe->a0;
     uint64 uaddr = p->trapframe->a1;
-    int len      = (int)p->trapframe->a2;
+    uint64 len   = p->trapframe->a2;
 
     if (fd != 1)
         return -EBADF;
-    if (len < 0 || len > 1024)
+    if (len > 1024)
         return -EINVAL;
 
     char kbuf[128];
-    int written = 0;
+    uint64 written = 0;
     while (written < len) {
-        int chunk = len - written;
-        if (chunk > (int)sizeof(kbuf))
-            chunk = (int)sizeof(kbuf);
+        uint64 chunk = len - written;
+        if (chunk > sizeof(kbuf))
+            chunk = sizeof(kbuf);
         if (copyin(p->pagetable, kbuf, uaddr + written, chunk) < 0)
             return -EFAULT;
-        for (int i = 0; i < chunk; i++)
+        for (uint64 i = 0; i < chunk; i++)
             uart_putc(kbuf[i]);
         written += chunk;
     }
-    return written;
+    return (int64)written;
 }
 ```
 
 Key design decisions:
+- **fd as int**: fd is a small bounded index (0, 1, 2...), cast to `int` for POSIX-style readability. `uaddr` and `len` stay `uint64` because they're addresses/sizes that feed directly into copyin.
 - **fd = 1 only**: we don't have a file descriptor table yet. Only stdout exists.
-- **Max length 1024**: prevents a user from making the kernel spin for too long in one syscall (arbitrary but reasonable for now).
+- **Max length 1024**: prevents a user from making the kernel spin for too long in one syscall (arbitrary but reasonable for now). No negative check needed — `len` is uint64, so any "negative" user value wraps to a huge positive that fails this check.
 - **Chunked copyin**: a 128-byte kernel stack buffer avoids allocating heap memory. Loops for longer writes.
 - **Returns bytes written**: the standard write() contract. For console output, always succeeds fully (partial writes happen with files/pipes later).
 - **Polling uart_putc**: simple and immediate. Phase 8-1 adds interrupt-driven buffered TX.
@@ -634,7 +635,7 @@ The syscall handler must validate everything:
 
 1. **Bounds-check the syscall number** — out-of-range a7 must not index past the table
 2. **Validate file descriptors** — fd must refer to a real open file (for now, only fd=1 is valid)
-3. **Validate lengths** — negative or absurdly large lengths must be rejected
+3. **Validate lengths** — absurdly large lengths must be rejected (uint64 makes "negative" values wrap to huge positives, caught by the same bounds check)
 4. **Validate user pointers via copyin** — never dereference a user-supplied VA directly; always walk the page table and check PTE_U
 
 ### What copyin prevents
