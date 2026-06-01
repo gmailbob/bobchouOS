@@ -1935,4 +1935,3 @@ TRAPFRAME           → PA of proc's trapframe  RW   (no PTE_U)
 0x1000              → PA of user code          R-X + PTE_U
 0x3000 (stack)      → PA of stack page         RW  + PTE_U
 ```
-
