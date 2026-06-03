@@ -134,7 +134,9 @@ Across all operating systems, there are only two ways to create a process:
 | **Duplication** (fork) | User process creating child | Copy parent's address space + trapframe, child "returns from fork" with value 0 |
 
 Our kernel currently has only the first: `proc_create_kernel(fn, name)`.
-fork arrives in Phase 6 as a user-mode syscall.
+fork arrives in Phase 6 as a user-mode syscall. (Why fork+exec as two
+steps instead of a single "spawn"? See Lecture 6-3 Part 3 for the full
+comparison with Windows's `CreateProcess` model.)
 
 **No modern OS forks kernel threads:**
 
