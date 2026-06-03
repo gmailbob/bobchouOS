@@ -58,4 +58,8 @@ void kfree_pages(void *pa, uint32 order);
 struct page *pa_to_page(uint64 pa);
 uint64 page_to_pa(struct page *pg);
 
+/* Reference counting for user pages (COW preparation). */
+void page_get(void *pa);
+void page_put(void *pa);
+
 #endif /* KALLOC_H */

@@ -67,12 +67,101 @@ sys_exit(void) {
     return 0; /* unreachable */
 }
 
+/*
+ * sys_fork — create a child process (copy of the caller).
+ *
+ * Returns child PID to parent, 0 to child.
+ */
+static int64
+sys_fork(void) {
+    /* TODO(student): call proc_fork() */
+    return -ENOSYS;
+}
+
+/*
+ * sys_exec — replace address space with a new program.
+ *
+ * Args (from trapframe):
+ *   a0 = user pointer to path string
+ *   a1 = user pointer to argv array (null-terminated)
+ *
+ * Returns argc on success (never returns to old code),
+ * -1 on failure (old process continues).
+ */
+static int64
+sys_exec(void) {
+    /* TODO(student): copyinstr path, copyin argv pointers + strings,
+     * call proc_exec(path, argv) */
+    (void)this_proc();
+    return -ENOSYS;
+}
+
+/*
+ * sys_wait — wait for a child to exit and reap it.
+ *
+ * Args (from trapframe):
+ *   a0 = user pointer to int (for exit status), or 0 to ignore
+ *
+ * Returns child PID, or -1 if no children.
+ */
+static int64
+sys_wait(void) {
+    /* TODO(student): call proc_wait(&kstatus), copyout status to user */
+    (void)this_proc();
+    return -ENOSYS;
+}
+
+/*
+ * sys_getpid — return the current process's PID.
+ */
+static int64
+sys_getpid(void) {
+    return this_proc()->pid;
+}
+
+/*
+ * sys_kill — send a kill signal to a process.
+ *
+ * Args (from trapframe):
+ *   a0 = target PID
+ *
+ * Returns 0 on success, -1 if PID not found.
+ */
+static int64
+sys_kill(void) {
+    int pid = (int)this_proc()->trapframe->a0;
+    return proc_kill(pid);
+}
+
+/*
+ * sys_sleep — suspend the calling process for a number of timer ticks.
+ *
+ * Args (from trapframe):
+ *   a0 = number of ticks to sleep
+ *
+ * Returns 0 on success.
+ */
+static int64
+sys_sleep(void) {
+    /* TODO(student): read tick count from trapframe->a0,
+     * compute deadline = current_mtime + ticks * TIMER_INTERVAL,
+     * add to sleep list, yield. Timer interrupt wakes when deadline passes. */
+    (void)this_proc();
+    return -ENOSYS;
+}
+
 /* --- Dispatch table --- */
 // clang-format off
 static int64 (*syscalls[])(void) = {
-    [0]         = 0,
-    [SYS_write] = sys_write,
-    [SYS_exit]  = sys_exit,
+    [0]          = 0,
+    [SYS_write]  = sys_write,
+    [SYS_exit]   = sys_exit,
+    [SYS_fork]   = sys_fork,
+    [SYS_exec]   = sys_exec,
+    [SYS_wait]   = sys_wait,
+    [SYS_getpid] = sys_getpid,
+    [SYS_kill]   = sys_kill,
+    [SYS_sleep]  = sys_sleep,
 };
 // clang-format on
 

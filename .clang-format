@@ -2,7 +2,7 @@
 # bobchouOS C formatting style
 # Linux kernel style with minor tweaks.
 #
-# Run:    find kernel/ \( -name "*.c" -o -name "*.h" \) -exec clang-format -i {} +
+# Run:    find kernel/ include/ user/ \( -name "*.c" -o -name "*.h" \) -exec clang-format -i {} +
 # Check:  append --dry-run --Werror after clang-format
 
 BasedOnStyle: LLVM

@@ -19,9 +19,6 @@
 #include "trapframe.h"
 #include "vm.h"
 
-/* Forward declaration (defined in vm.c, only used by proc_create_user_test). */
-pte_t *proc_pagetable(struct proc *p);
-
 /* --- Global state --- */
 
 static LIST_HEAD(all_procs);
@@ -382,43 +379,38 @@ idle_thread(void) {
 }
 
 /*
- * init_thread — the init process (PID 1).
- * Root of the process tree. Loops calling proc_wait() to reap zombies forever.
+ * init_start — PID 1 kernel thread that execs into user-mode init.
+ *
+ * Created as a kernel thread so the scheduler is already running when
+ * exec is called. This matters in Phase 7 when exec reads from disk
+ * (needs interrupts + sleep). For now the binary is embedded in memory,
+ * but the pattern is future-proof.
+ *
+ * After exec succeeds, this kernel thread is gone — replaced by the
+ * user init program. If exec fails, panic (no init = no OS).
  */
-void
-init_thread(void) {
+static void
+init_start(void) {
     kthread_start();
-    for (;;) {
-        int status;
-        int pid = proc_wait(&status);
-        if (pid > 0) {
-            intr_off();
-            kprintf("init: reaped pid %d (status %d)\n", pid, status);
-            intr_on();
-        }
-    }
+    /* TODO(student): call proc_exec("init", NULL).
+     * On success, exec replaces this kernel thread with user code
+     * and never returns. On failure, panic. */
+    panic("init_start: exec init failed");
 }
 
-static void proc_create_user_test(void);
-
 /*
- * proc_bootstrap — create the bootstrap kernel threads.
+ * proc_bootstrap — create bootstrap processes.
  *
- * In Phase 6, this becomes: create idle + a single init that calls
- * exec("/init") to load the user-space init binary.
+ * PID 0: idle kernel thread (wfi loop).
+ * PID 1: kernel thread that immediately execs into user init.
  */
 void
 proc_bootstrap(void) {
-    proc_create_kernel(idle_thread, "idle");             /* PID 0 */
-    init_proc = proc_create_kernel(init_thread, "init"); /* PID 1 */
-    proc_create_user_test();                             /* PID 2 — test user process */
+    proc_create_kernel(idle_thread, "idle");            /* PID 0 */
+    init_proc = proc_create_kernel(init_start, "init"); /* PID 1 */
 }
 
-/* --- User process creation (Round 6-1) --- */
-
-/* Embedded test user binary (from user_test_bin.S via .incbin). */
-extern char test_user_bin[];
-extern char test_user_bin_end[];
+/* --- User process creation (Round 6-3) --- */
 
 /* Defined in trap.c */
 void user_trap(void);
@@ -442,80 +434,35 @@ user_proc_start(void) {
 }
 
 /*
- * proc_create_user_test — Create the Round 6-1 test user process.
+ * proc_create_user — allocate a user process with an empty address space.
  *
- * Allocates a process, builds its user page table, maps a hardcoded
- * user program at VA 0x1000, and prepares it for first entry to user mode.
+ * Allocates proc struct, kernel stack, trapframe, and page table.
+ * Returns the process ready for the caller to fill in (exec or fork).
  *
- * See Lecture 6-1, Part 5.
+ * See Lecture 6-3, Part 9.
  */
-static void
-proc_create_user_test(void) {
-    struct proc *p = kmalloc(sizeof(struct proc));
-    memset(p, 0, sizeof(struct proc));
+struct proc *
+proc_create_user(void) {
+    /* TODO(student): allocate proc (kmalloc + memset), assign PID,
+     * allocate kstack, init spinlock/waitqueue/lists/vma_list,
+     * allocate trapframe, create user page table (proc_pagetable),
+     * set context.ra = user_proc_start, context.sp = kstack + PG_SIZE.
+     * Return the proc (don't add to scheduler — caller does that). */
+    return 0;
+}
 
-    /* Identity */
-    p->pid = alloc_pid();
-    memcpy(p->name, "test", 4);
-
-    /* Kernel stack */
-    p->kstack = (uint64)kalloc();
-    if (!p->kstack)
-        panic("proc_create_user_test: kalloc failed");
-
-    /* Context: swtch will "ret" into user_proc_start, which releases
-     * p->lock and calls user_trap_ret to enter user mode. */
-    p->context.ra = (uint64)user_proc_start;
-    p->context.sp = p->kstack + PG_SIZE;
-
-    /* Synchronization and lifecycle */
-    spin_init(&p->lock, "test");
-    wq_init(&p->child_wq, "test");
-    INIT_LIST_HEAD(&p->children);
-    INIT_LIST_HEAD(&p->wait_link);
-
-    /* Parent-child linkage (PID 0 and 1 have no parent) */
-    if (init_proc) {
-        p->parent = init_proc;
-        list_add_tail(&p->sibling, &init_proc->children);
-    }
-
-    /* Trapframe */
-    p->trapframe = (struct trapframe *)kalloc();
-    if (!p->trapframe)
-        panic("proc_create_user_test: kalloc failed");
-
-    /* User page table */
-    p->pagetable = proc_pagetable(p);
-
-    /* Copy test code into a fresh page (mini loader) */
-    void *user_code = kalloc();
-    if (!user_code)
-        panic("failed to load user_code");
-    memcpy(user_code, test_user_bin, (uint64)test_user_bin_end - (uint64)test_user_bin);
-    if (map_pages(p->pagetable, USER_TEXT_START, PG_SIZE, (uint64)user_code, PTE_R | PTE_X | PTE_U))
-        panic("proc_create_user_test: map user code failed");
-
-    /* User stack */
-    void *user_stack = kalloc();
-    if (!user_stack)
-        panic("proc_create_user_test: alloc user stack failed");
-    if (map_pages(p->pagetable, 0x3000, PG_SIZE, (uint64)user_stack, PTE_R | PTE_W | PTE_U))
-        panic("proc_create_user_test: map user stack failed");
-
-    /* Trapframe initial state for first entry to user mode */
-    p->trapframe->epc = USER_TEXT_START;
-    p->trapframe->sp = 0x4000;
-    p->trapframe->kernel_satp = csrr(satp);
-    p->trapframe->kernel_sp = p->kstack + PG_SIZE;
-    p->trapframe->user_trap = (uint64)user_trap;
-    p->trapframe->hartid = 0;
-
-    p->sz = 0x4000;
-
-    /* Add to global structures and run queue */
-    p->state = PROC_RUNNABLE;
-    list_add_tail(&p->all_list, &all_procs);
-    run_queue_add(p);
-    hash_add(pid_table, &p->pid_link, PID_HASH_BITS, hash_int(p->pid));
+/*
+ * proc_fork — create a child process as a copy of the current process.
+ *
+ * Returns child PID to parent, sets child's trapframe->a0 = 0.
+ * Returns -1 on failure.
+ *
+ * See Lecture 6-3, Part 3.
+ */
+int
+proc_fork(void) {
+    /* TODO(student): call proc_create_user, vma_dup_all, copy trapframe,
+     * set child->trapframe->a0 = 0, set parent/child links,
+     * mark RUNNABLE, add to scheduler. Return child pid. */
+    return -1;
 }

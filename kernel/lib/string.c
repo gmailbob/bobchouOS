@@ -16,3 +16,20 @@ memcpy(void *dst, const void *src, uint64 n) {
         *d++ = *s++;
     return dst;
 }
+
+int
+strcmp(const char *a, const char *b) {
+    while (*a && *a == *b) {
+        a++;
+        b++;
+    }
+    return (uint8)*a - (uint8)*b;
+}
+
+int
+strlen(const char *s) {
+    int n = 0;
+    while (s[n])
+        n++;
+    return n;
+}

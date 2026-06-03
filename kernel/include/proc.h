@@ -11,6 +11,7 @@
 #include "list.h"
 #include "spinlock.h"
 #include "vm.h"
+#include "vma.h"
 #include "wait_queue.h"
 
 /* Number of PID hash table buckets (2^PID_HASH_BITS = 64). */
@@ -85,7 +86,7 @@ struct proc {
     /* --- Address space (Phase 6) --- */
     pte_t *pagetable;
     struct trapframe *trapframe;
-    uint64 sz;
+    struct list_head vma_list; /* sorted list of VMAs (replaces sz) */
 
     /* --- Lifecycle --- */
     int killed;                 /* set by kill(), checked in kernel_trap_ret and sleep loops */
@@ -106,6 +107,9 @@ struct cpu {
 void proc_init(void);
 void proc_bootstrap(void);
 struct proc *proc_create_kernel(void (*fn)(void), const char *name);
+struct proc *proc_create_user(void);
+int proc_fork(void);
+int proc_exec(const char *path, char **argv);
 void scheduler(void);
 void run_queue_add(struct proc *p);
 void yield(void);

@@ -86,11 +86,14 @@ void vm_enable_paging(void);
 pte_t *walk(pte_t *root_pt, uint64 va, int alloc);
 int map_pages(pte_t *root_pt, uint64 va, uint64 size, uint64 pa, int perm);
 
-/* User page table management (Round 6-1) */
-void proc_free_pagetable(pte_t *pt, uint64 sz);
+/* User page table management (Round 6-1, updated 6-3) */
+struct proc;
+pte_t *proc_pagetable(struct proc *p);
+void proc_free_pagetable(pte_t *pt);
 
-/* User memory access (Round 6-2) */
+/* User memory access (Round 6-2, copyinstr added in 6-3) */
 int copyin(pte_t *pagetable, void *dst, uint64 srcva, uint64 len);
 int copyout(pte_t *pagetable, uint64 dstva, void *src, uint64 len);
+int copyinstr(pte_t *pagetable, char *dst, uint64 srcva, uint64 max);
 
 #endif /* VM_H */

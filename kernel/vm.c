@@ -177,7 +177,7 @@ proc_pagetable(struct proc *p) {
     fail |= map_pages(user_root_pt, TRAMPOLINE, PG_SIZE, (uint64)user_vec, PTE_R | PTE_X);
     fail |= map_pages(user_root_pt, TRAPFRAME, PG_SIZE, (uint64)p->trapframe, PTE_R | PTE_W);
     if (fail) {
-        proc_free_pagetable(user_root_pt, PG_SIZE);
+        proc_free_pagetable(user_root_pt);
         return NULL;
     }
     return user_root_pt;
@@ -192,9 +192,10 @@ proc_pagetable(struct proc *p) {
  * See Lecture 6-1, Part 9.
  */
 void
-proc_free_pagetable(pte_t *root, uint64 sz) {
+proc_free_pagetable(pte_t *root) {
     /* Walk the 3-level tree, freeing level-0 and level-1 table pages.
-     * Does NOT free leaf pages (user text, stack) — those are freed by caller. */
+     * Does NOT free leaf pages (user text, stack) — those are freed by caller
+     * via vma_free_all. */
     for (int i = 0; i < PG_SIZE / sizeof(pte_t); i++) {
         if (!(root[i] & PTE_V))
             continue;
@@ -206,7 +207,6 @@ proc_free_pagetable(pte_t *root, uint64 sz) {
         kfree(lv1); /* free level-1 table page */
     }
     kfree(root); /* free root (level-2) page */
-    (void)sz;
 }
 
 /* --- User memory access (Round 6-2) --- */
@@ -267,4 +267,56 @@ copyout(pte_t *pagetable, uint64 dstva, void *src, uint64 len) {
         len -= n;
     }
     return 0;
+}
+
+/*
+ * copyinstr — Copy a null-terminated string from user VA to kernel buffer.
+ *
+ * Stops at '\0' or when max bytes have been copied.
+ * Returns 0 on success, -EFAULT on bad address, -ENAMETOOLONG if no
+ * null terminator found within max bytes.
+ *
+ * See Lecture 6-3, Part 7.
+ */
+int
+copyinstr(pte_t *pagetable, char *dst, uint64 srcva, uint64 max) {
+    /* TODO(student): same page-at-a-time walk as copyin, but stop at '\0' */
+    (void)pagetable;
+    (void)dst;
+    (void)srcva;
+    (void)max;
+    return -ENOSYS;
+}
+
+/* --- Reference-counted page helpers (Round 6-3) --- */
+
+/*
+ * page_get — increment a physical page's reference count.
+ *
+ * See Lecture 6-3, Part 2.
+ */
+void
+page_get(void *pa) {
+    struct page *pg = pa_to_page((uint64)pa);
+    pg->refcount++;
+}
+
+/*
+ * page_put — decrement reference count, free page when it reaches one.
+ *
+ * When refcount drops to 1, the last user is releasing: call kfree
+ * which asserts refcount == 1 and sets it to 0 (its normal contract).
+ * When refcount is still > 1 after decrement, the page is still shared.
+ *
+ * See Lecture 6-3, Part 2.
+ */
+void
+page_put(void *pa) {
+    struct page *pg = pa_to_page((uint64)pa);
+    if (pg->refcount < 1)
+        panic("page_put: refcount already 0");
+    if (pg->refcount == 1)
+        kfree(pa);
+    else
+        pg->refcount--;
 }

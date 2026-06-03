@@ -31,13 +31,16 @@ OBJS    = kernel/arch/entry.o \
           kernel/arch/swtch.o \
           kernel/arch/sbi.o \
           kernel/arch/trampoline.o \
-          kernel/arch/user_test_bin.o \
+          kernel/arch/user_bin_init.o \
+          kernel/arch/user_bin_hello.o \
           kernel/main.o \
           kernel/trap.o \
           kernel/kalloc.o \
           kernel/vm.o \
           kernel/kmalloc.o \
           kernel/proc.o \
+          kernel/vma.o \
+          kernel/exec.o \
           kernel/syscall.o \
           kernel/spinlock.o \
           kernel/wait_queue.o \
@@ -63,15 +66,25 @@ OBJCOPY = $(CROSS)objcopy
 QEMU    = qemu-system-riscv64
 QFLAGS  = -machine virt -nographic -bios none -kernel $(TARGET)
 
+USER_PROGS = user/init user/hello
+
 # ---------- User program build ----------
 
-user/test_user.elf: user/test_user.S user/user.ld include/syscall_num.h
-	$(CC) $(ASFLAGS) -nostdlib -T user/user.ld -o $@ $<
+USER_CFLAGS = -march=rv64imac_zicsr -mabi=lp64 \
+              -ffreestanding -nostdlib -mcmodel=medany \
+              -Wall -O2 -g -I include -I user
 
-user/test_user.bin: user/test_user.elf
-	$(OBJCOPY) -O binary $< $@
+# Round 6-3 user programs (full ELF, embedded directly)
+user/init: user/init.c user/start.S user/usys.S user/user.ld user/user.h include/syscall_num.h
+	$(CC) $(USER_CFLAGS) -nostdlib -T user/user.ld -o $@ user/start.S user/usys.S user/init.c
 
-kernel/arch/user_test_bin.o: kernel/arch/user_test_bin.S user/test_user.bin
+user/hello: user/hello.c user/start.S user/usys.S user/user.ld user/user.h include/syscall_num.h
+	$(CC) $(USER_CFLAGS) -nostdlib -T user/user.ld -o $@ user/start.S user/usys.S user/hello.c
+
+kernel/arch/user_bin_init.o: kernel/arch/user_bin_init.S user/init
+	$(AS) $(ASFLAGS) -c -o $@ $<
+
+kernel/arch/user_bin_hello.o: kernel/arch/user_bin_hello.S user/hello
 	$(AS) $(ASFLAGS) -c -o $@ $<
 
 # ---------- Targets ----------
@@ -102,6 +115,6 @@ debug: $(TARGET)
 	$(QEMU) $(QFLAGS) -s -S
 
 clean:
-	rm -f $(OBJS) $(TEST_OBJS) $(TARGET) user/test_user.elf user/test_user.bin
+	rm -f $(OBJS) $(TEST_OBJS) $(TARGET) $(USER_PROGS)
 
 .PHONY: all run debug test clean
