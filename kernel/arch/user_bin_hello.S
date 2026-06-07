@@ -8,5 +8,5 @@
 .globl _binary_hello_start
 .globl _binary_hello_end
 _binary_hello_start:
-    .incbin "user/hello"
+    .incbin "user/hello.elf"
 _binary_hello_end:

@@ -280,12 +280,26 @@ copyout(pte_t *pagetable, uint64 dstva, void *src, uint64 len) {
  */
 int
 copyinstr(pte_t *pagetable, char *dst, uint64 srcva, uint64 max) {
-    /* TODO(student): same page-at-a-time walk as copyin, but stop at '\0' */
-    (void)pagetable;
-    (void)dst;
-    (void)srcva;
-    (void)max;
-    return -ENOSYS;
+    while (max > 0) {
+        uint64 va_page = PG_ROUND_DOWN(srcva);
+        pte_t *pte = walk(pagetable, va_page, 0);
+        if (!pte || !(*pte & PTE_V) || !(*pte & PTE_U))
+            return -EFAULT;
+        uint64 offset = srcva - va_page;
+        char *src = (char *)(pte_to_pa(*pte) + offset);
+        uint64 n = PG_SIZE - offset;
+        if (n > max)
+            n = max;
+        srcva += n;
+        max -= n;
+        while (n--) {
+            *dst++ = *src;
+            if (*src == '\0')
+                return 0;
+            src++;
+        }
+    }
+    return -ENAMETOOLONG;
 }
 
 /* --- Reference-counted page helpers (Round 6-3) --- */
@@ -298,6 +312,8 @@ copyinstr(pte_t *pagetable, char *dst, uint64 srcva, uint64 max) {
 void
 page_get(void *pa) {
     struct page *pg = pa_to_page((uint64)pa);
+    if (pg->refcount < 1)
+        panic("page_get: refcount 0 (use-after-free)");
     pg->refcount++;
 }
 

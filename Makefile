@@ -61,12 +61,10 @@ TEST_OBJS = kernel/test/run_tests.o \
             kernel/test/test_wait_queue.o \
             kernel/test/test_proc.o
 
-OBJCOPY = $(CROSS)objcopy
-
 QEMU    = qemu-system-riscv64
 QFLAGS  = -machine virt -nographic -bios none -kernel $(TARGET)
 
-USER_PROGS = user/init user/hello
+USER_PROGS = user/init.elf user/hello.elf
 
 # ---------- User program build ----------
 
@@ -75,16 +73,16 @@ USER_CFLAGS = -march=rv64imac_zicsr -mabi=lp64 \
               -Wall -O2 -g -I include -I user
 
 # Round 6-3 user programs (full ELF, embedded directly)
-user/init: user/init.c user/start.S user/usys.S user/user.ld user/user.h include/syscall_num.h
+user/init.elf: user/init.c user/start.S user/usys.S user/user.ld user/user.h include/syscall_num.h
 	$(CC) $(USER_CFLAGS) -nostdlib -T user/user.ld -o $@ user/start.S user/usys.S user/init.c
 
-user/hello: user/hello.c user/start.S user/usys.S user/user.ld user/user.h include/syscall_num.h
+user/hello.elf: user/hello.c user/start.S user/usys.S user/user.ld user/user.h include/syscall_num.h
 	$(CC) $(USER_CFLAGS) -nostdlib -T user/user.ld -o $@ user/start.S user/usys.S user/hello.c
 
-kernel/arch/user_bin_init.o: kernel/arch/user_bin_init.S user/init
+kernel/arch/user_bin_init.o: kernel/arch/user_bin_init.S user/init.elf
 	$(AS) $(ASFLAGS) -c -o $@ $<
 
-kernel/arch/user_bin_hello.o: kernel/arch/user_bin_hello.S user/hello
+kernel/arch/user_bin_hello.o: kernel/arch/user_bin_hello.S user/hello.elf
 	$(AS) $(ASFLAGS) -c -o $@ $<
 
 # ---------- Targets ----------

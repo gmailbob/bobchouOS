@@ -9,7 +9,7 @@
 int
 main(void) {
     write(1, "hello world\n", 12);
-    sleep(10); /* ~1 second (10 timer ticks at 100ms interval) */
+    sleep(1000); /* 1 second */
     write(1, "exiting after sleep 10\n", 23);
     exit(0);
 }

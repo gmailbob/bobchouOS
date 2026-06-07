@@ -979,20 +979,28 @@ acquired on one side, released on the other:
 ```c
 // In scheduler():
 for (;;) {
-    spin_unlock(&prev->lock);       // release process that just yielded
     struct proc *p = pick_next();
-    spin_lock(&p->lock);            // acquire next process's lock
+    spin_lock(&p->lock);            // acquire the process we're about to run
     p->state = PROC_RUNNING;
     swtch(&c->scheduler, &p->context);
+    // ← p called sched() and swtch'd back here, still holding p->lock
+    //   (it acquired p->lock in yield/sleep before swtch-ing out).
+    spin_unlock(&p->lock);          // release the lock p brought back
 }
 
 // In yield() or sleep():
 spin_lock(&p->lock);
 p->state = PROC_RUNNABLE;  // or SLEEPING
 swtch(&p->context, &c->scheduler);
-// scheduler acquired our lock before switching to us
+// ← scheduler re-acquired p->lock (above) before swtch-ing back to us,
+//   so p->lock is held here. Release it.
 spin_unlock(&p->lock);
 ```
+
+The `spin_unlock` in the scheduler loop sits **after** `swtch` (not at
+the top of the loop): the lock it releases belongs to the same `p` this
+iteration dispatched — the only process that could have swtch'd back to
+this scheduler stack frame.
 
 ### The weirdness: releasing someone else's lock
 
@@ -1051,8 +1059,9 @@ Hart 0:                              Hart 1:
 
 All the complexity reduces to one rule:
 
-> **`p->lock` must be held from the moment you change `p->state` until
-> the corresponding `swtch` completes on the other side.**
+> **`p->lock` — and ONLY `p->lock` — must be held from the moment you
+> change `p->state` until the corresponding `swtch` completes on the
+> other side. All other locks must be released before `sched()`.**
 
 This single rule prevents every scheduling race:
 
@@ -1070,6 +1079,16 @@ The pattern is always:
 4. The other side releases `p->lock`
 
 If you follow this one rule, you cannot get the multi-hart races.
+
+**Reading the table as two halves of a round-trip:** the last row
+(scheduler→RUNNING) is the *inbound* leg of every yield/sleep. When a
+process yields, the scheduler releases its lock (outbound, rows 1–2).
+When the scheduler later re-dispatches that process, the scheduler
+acquires the lock again and the *process* releases it after `sched()`
+returns (inbound, last row). So a single `yield()`/`wq_sleep()` call
+crosses the boundary twice — out and back — with a lock release on each
+side. (`exit()` is the exception: it never returns, so only the
+outbound release happens.)
 
 ---
 
@@ -1569,8 +1588,10 @@ Each transition shows: function, locks acquired (irq = irqsave, plain = interrup
     acquire: p->lock [irq]                 → set RUNNABLE
     run_queue_add: run_queue_lock [plain, self-contained]
     sched(): swtch to scheduler            → p->lock crosses boundary
-    release: p->lock                       → by SCHEDULER after swtch returns
-    restore: irq flags via irqrestore
+    release: p->lock (OUTBOUND)            → by SCHEDULER after swtch returns to it
+    ─── later, when re-dispatched: scheduler re-acquires p->lock, swtch back ───
+    release: p->lock (INBOUND) + irq       → by THIS process via irqrestore,
+                                             once sched() returns to yield
 
 ═══════════════════════════════════════════════════════════════════════
 
@@ -1581,7 +1602,11 @@ Each transition shows: function, locks acquired (irq = irqsave, plain = interrup
     release: lk (condition lock)           → lost wakeup solved
     release: wq->lock                      → queue consistent
     sched(): swtch to scheduler            → p->lock crosses boundary
-    release: p->lock                       → by SCHEDULER after swtch returns
+    release: p->lock (OUTBOUND)            → by SCHEDULER after swtch returns to it
+    ─── later, when re-dispatched: scheduler re-acquires p->lock, swtch back ───
+    release: p->lock (INBOUND) [plain]     → by THIS process, right after sched()
+                                             returns into wq_sleep (the fix that
+                                             prevents loop-back deadlock)
     acquire: lk [plain]                    → re-acquire condition lock (POSIX)
 
 ═══════════════════════════════════════════════════════════════════════
@@ -1601,7 +1626,10 @@ Each transition shows: function, locks acquired (irq = irqsave, plain = interrup
     acquire: p->lock [plain]               → set ZOMBIE, set exit_status
     release: wait_lock [plain — still hold p->lock]
     sched(): swtch to scheduler            → p->lock crosses boundary
-    release: p->lock                       → by SCHEDULER (never returns)
+    release: p->lock (OUTBOUND only)       → by SCHEDULER. SINGLE-PHASE: the
+                                             process is now a ZOMBIE and is never
+                                             re-dispatched, so there is no inbound
+                                             re-acquire/release (unlike [C]/[D]).
 
 ═══════════════════════════════════════════════════════════════════════
 

@@ -8,5 +8,5 @@
 .globl _binary_init_start
 .globl _binary_init_end
 _binary_init_start:
-    .incbin "user/init"
+    .incbin "user/init.elf"
 _binary_init_end:

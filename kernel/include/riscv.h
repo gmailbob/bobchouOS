@@ -95,7 +95,9 @@
 #define CLINT_MTIME         (CLINT_BASE + 0xBFF8)
 
 /* ---- Timer ---- */
+#define MTIME_FREQ          _UL(10000000)  /* QEMU virt: mtime runs at 10 MHz */
 #define TIMER_INTERVAL      _UL(100000)    /* 100,000 ticks = 10ms at 10 MHz */
+#define MS_TO_MTIME(ms)     ((ms) * (MTIME_FREQ / 1000))
 
 // clang-format on
 

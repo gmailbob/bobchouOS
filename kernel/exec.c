@@ -12,12 +12,13 @@
 #include "proc.h"
 #include "vma.h"
 #include "vm.h"
-#include "elf.h"
+#include "elf_defs.h"
 #include "kalloc.h"
 #include "kmalloc.h"
 #include "string.h"
 #include "mem_layout.h"
 #include "errno.h"
+#include "trapframe.h"
 
 /* --- Embedded binary table --- */
 
@@ -36,6 +37,18 @@ static struct embedded_binary binaries[] = {
 };
 
 #define NBINARIES (sizeof(binaries) / sizeof(binaries[0]))
+
+static int
+elf_to_pte(uint32 flags) {
+    int perm = PTE_U;
+    if (flags & PF_R)
+        perm |= PTE_R;
+    if (flags & PF_W)
+        perm |= PTE_W;
+    if (flags & PF_X)
+        perm |= PTE_X;
+    return perm;
+}
 
 /*
  * lookup_binary — find an embedded binary by name.
@@ -65,26 +78,74 @@ lookup_binary(const char *name) {
  */
 int
 proc_exec(const char *path, char **argv) {
-    /* TODO(student):
-     * 0. If this_proc() has no trapframe (kernel thread calling exec
-     *    for the first time, e.g. init_start), allocate one.
-     *    Also set context.ra = user_proc_start so swtch returns to user mode.
-     * 1. lookup_binary(path) — fail with -ENOENT if not found
-     * 2. Validate ELF header (magic, class, machine)
-     * 3. Build new page table via proc_pagetable(this_proc())
-     * 4. For each PT_LOAD phdr:
-     *      - allocate pages, copy filesz bytes, zero remaining
-     *      - map into new page table
-     *      - create VMA
-     * 5. Allocate + map user stack page at USER_STACK_TOP - PG_SIZE
-     *    Create stack VMA
-     * 6. Push argv onto stack (strings, then pointer array)
-     * 7. Free old VMA list + old page table (if any), install new
-     * 8. Set trapframe->epc = entry, trapframe->sp = new sp
-     * 9. Return argc (or 0 if argv is NULL)
-     */
-    (void)path;
-    (void)argv;
-    (void)lookup_binary;
-    return -1;
+    struct proc *p = this_proc();
+    if (!p->trapframe) {
+        if (!(p->trapframe = kalloc()))
+            return -ENOMEM;
+        // p->context.ra = (uint64)user_proc_start;
+    }
+
+    const struct embedded_binary *bin = lookup_binary(path);
+    if (!bin)
+        return -ENOENT;
+
+    struct elf_header *elf = (struct elf_header *)bin->start;
+    uint8 *e_ident = elf->e_ident;
+    if (*(uint32 *)e_ident != ELF_MAGIC || e_ident[EI_CLASS] != ELFCLASS64 ||
+        e_ident[EI_DATA] != ELFDATA2LSB || elf->e_machine != EM_RISCV)
+        return -ENOENT;
+
+    proc_free_pagetable(p->pagetable);
+    p->pagetable = proc_pagetable(p);
+    vma_free_all(p);
+
+    struct elf_phdr *phdrs = (struct elf_phdr *)((uint64)bin->start + sizeof(struct elf_header));
+    for (uint16 i = 0; i < elf->e_phnum; i++) {
+        if (phdrs[i].p_type != PT_LOAD)
+            continue;
+
+        uint8 *src = (uint8 *)elf + phdrs[i].p_offset;
+
+        uint64 start = PG_ROUND_DOWN(phdrs[i].p_vaddr);
+        uint64 end = PG_ROUND_UP(phdrs[i].p_vaddr + phdrs[i].p_memsz);
+        int perm = elf_to_pte(phdrs[i].p_flags);
+        for (uint64 va = start; va < end; va += PG_SIZE) {
+            void *pg = kalloc();
+            memcpy(pg, src, PG_SIZE);
+            src += PG_SIZE;
+
+            map_pages(p->pagetable, va, PG_SIZE, (uint64)pg, perm);
+        }
+
+        vma_add(p, vma_create(start, end, perm));
+    }
+
+    uint8 *stack = kalloc();
+    uint64 ustack_bot = USER_STACK_TOP - PG_SIZE;
+    map_pages(p->pagetable, ustack_bot, PG_SIZE, (uint64)stack, PTE_R | PTE_W | PTE_U);
+
+    uint64 sp = USER_STACK_TOP;
+
+    uint64 uargv[16];
+    int argc = 0;
+    for (int i = 0; argv && argv[i]; i++) {
+        int len = strlen(argv[i]) + 1;
+        sp -= len;
+        memcpy(stack + (sp - ustack_bot), argv[i], len);
+        uargv[i] = sp;
+        argc++;
+    }
+
+    sp &= ~15UL;
+
+    sp -= (argc + 1) * 8;
+    for (int i = 0; i < argc; i++) {
+        *(uint64 *)(stack + (sp + i * 8 - ustack_bot)) = uargv[i];
+    }
+    *(uint64 *)(stack + (sp + argc * 8 - ustack_bot)) = 0;
+
+    p->trapframe->epc = elf->e_entry;
+    p->trapframe->sp = sp;
+
+    return argc;
 }

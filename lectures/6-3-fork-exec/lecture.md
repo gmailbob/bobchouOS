@@ -832,7 +832,11 @@ int64 sys_exec(void) {
     if (copyinstr(p->pagetable, path, upath, sizeof(path)) < 0)
         return -EFAULT;
 
-    // Copy argv pointers and strings from user space
+    // Copy argv pointers and strings from user space.
+    // argv is a NULL-terminated array of pointers (the universal Unix
+    // convention — the kernel scans until it reads a NULL entry).
+    // The user must provide the NULL; the cap at 15 bounds the damage
+    // if they don't.
     char *argv[16];
     char kargv_buf[512];  // scratch space for all strings
     int argc = 0;
@@ -907,6 +911,48 @@ int64 sys_getpid(void) {
 Trivial — no arguments, no memory access. Returns the current
 process's PID directly.
 
+> **Why this needs a syscall:** The PID lives in `p->pid` inside the
+> kernel's `struct proc` — memory the user page table doesn't map. The
+> user program can't read it directly; `ecall` is the only door. The
+> same applies to any kernel-internal state the user wants: parent PID,
+> user ID, resource usage — each requires its own syscall.
+>
+> **How Linux avoids the trap (vDSO):** For frequently-read data like
+> the current time, the ecall overhead (trap + page table switch +
+> return: ~1μs) becomes a bottleneck at millions of calls per second.
+> Linux's fix: map a kernel-maintained read-only page into every
+> process's address space (the **vDSO** — virtual dynamic shared
+> object). The kernel updates it on every timer tick (~1ms). User-side
+> `gettimeofday()` just reads from this page — a plain memory load
+> (~1ns), no trap.
+>
+> The consistency problem: the kernel writes multiple fields (seconds,
+> nanoseconds) and the user reads them without a lock. Solution: a
+> **sequence counter** — the user reads the counter before and after;
+> if it changed (or is odd), the kernel was mid-update, so retry.
+>
+> **What else lives in the vDSO page:**
+>
+> | Data | Used by | Why hot |
+> |------|---------|---------|
+> | Wall-clock time | `gettimeofday()`, `clock_gettime()` | Logging, timestamps, databases |
+> | Monotonic clock | `clock_gettime(CLOCK_MONOTONIC)` | Benchmarks, frame pacing |
+> | CPU ID | `getcpu()` | NUMA-aware allocation |
+> | Coarse time | `clock_gettime(CLOCK_*_COARSE)` | When ms-precision suffices |
+>
+> All of these would be individual syscalls without the vDSO — and in
+> the POSIX standard, they ARE individual syscalls (`getpid`,
+> `getppid`, `getuid`, `geteuid`, `getgid`, `getegid`,
+> `clock_gettime`, `gettimeofday`, `getcpu`, ...). The vDSO doesn't
+> change the API — libc still exposes the same function signatures.
+> It just makes the fast-path ones skip the trap internally. Slow-path
+> queries that rarely repeat (like `getppid`) stay as real syscalls.
+>
+> We don't need this optimization (our handful of `getpid` calls are
+> cheap), but it illustrates the spectrum: start with a syscall
+> (correct, simple), optimize to shared memory when profiling proves
+> the trap overhead matters.
+
 ### Updated syscall table
 
 ```c
@@ -917,7 +963,8 @@ process's PID directly.
 #define SYS_wait    5
 #define SYS_getpid  6
 #define SYS_kill    7
-#define NSYSCALL    8
+#define SYS_sleep   8
+#define NSYSCALL    9
 
 static int64 (*syscalls[])(void) = {
     [0]          = NULL,
@@ -928,6 +975,7 @@ static int64 (*syscalls[])(void) = {
     [SYS_wait]   = sys_wait,
     [SYS_getpid] = sys_getpid,
     [SYS_kill]   = sys_kill,
+    [SYS_sleep]  = sys_sleep,
 };
 ```
 
@@ -943,6 +991,173 @@ int64 sys_kill(void) {
 Wraps the existing `proc_kill(pid)` — sets the target's `killed`
 flag. The target dies on its next return to user mode (checked in
 user_trap_ret).
+
+### sys_sleep — timer-based blocking
+
+Sleep suspends the calling process for N milliseconds. It's
+structurally similar to `proc_wait` — a process blocks until some
+condition is met. The difference: `proc_wait` blocks until a child
+exits (event-driven). `sys_sleep` blocks until the clock passes a
+deadline (time-driven).
+
+### Why we can't use sbi_set_timer
+
+The scheduler calls `sbi_set_timer(now + TIMER_INTERVAL)` every time
+it picks a process (for preemption). There's only ONE hardware timer
+comparator (mtimecmp). If `sys_sleep` also writes it, the scheduler
+immediately clobbers it at the next context switch. The sleep deadline
+must live elsewhere — in the proc struct.
+
+### The design: sorted sleep list + precise hardware arming
+
+Global state:
+
+```c
+static LIST_HEAD(sleep_list);       // sorted by wake_time (earliest first)
+static struct spinlock sleep_lock;  // protects the list
+```
+
+Three cooperating sites:
+
+```
+sys_sleep(ms):          (ms = milliseconds, converted via MS_TO_MTIME)
+    p->wake_time = read_mtime() + MS_TO_MTIME(ms)
+    spin_lock_irqsave(&sleep_lock, &irq)   ← outermost lock: save+disable irqs
+    insert p into sleep_list in sorted order (by wake_time)
+    spin_lock(&p->lock)                     ← plain: irqs already off
+    p->state = PROC_SLEEPING
+    spin_unlock(&sleep_lock)                ← plain: keep irqs off across sched
+    sched()  ← only p->lock crosses boundary; proc is OFF the run queue
+    (woken later by timer handler; scheduler re-acquired p->lock before
+     swtch-ing back, so p->lock is HELD here)
+    spin_unlock_irqrestore(&p->lock, irq)   ← inbound release + restore irqs
+    p->wake_time = 0
+    return 0
+
+scheduler (proc.c), before swtch to next process:
+    deadline = read_mtime() + TIMER_INTERVAL      // default: full quantum
+    lock sleep_lock
+    if sleep_list not empty:
+        earliest = front of sleep_list
+        if earliest->wake_time < deadline:
+            deadline = earliest->wake_time         // fire sooner for sleeper
+    unlock sleep_lock
+    sbi_set_timer(deadline)                        // arm hardware precisely
+
+timer interrupt handler (trap.c), fires at deadline:
+    lock sleep_lock
+    walk sleep_list from front (earliest first):
+        if read_mtime() >= p->wake_time:
+            remove from sleep_list
+            lock p->lock
+            p->state = PROC_RUNNABLE
+            run_queue_add(p)
+            unlock p->lock
+        else:
+            break  ← list is sorted, rest are in the future
+    unlock sleep_lock
+    set need_resched (normal preemption)
+```
+
+The hardware timer fires at whichever comes first — quantum expiry or
+the earliest sleeper's deadline. No wasted latency: when the timer
+fires for a sleeper, the handler wakes it immediately and the
+scheduler picks it up on the very next context switch.
+
+The sorted list means the scan stops early — once you hit a
+`wake_time` in the future, everything after it is also in the future.
+
+**Why not `yield()`:** `yield()` sets state = RUNNABLE and re-adds
+the proc to the run queue — it would never actually sleep. We use
+`sched()` directly, which leaves the proc OFF the run queue (same
+pattern as `wq_sleep` and `proc_exit`).
+
+**Why not a wait queue:** A wait queue needs a condition to re-check
+on wake, and `wq_wake` wakes one/all waiters indiscriminately. For
+timed sleep, we want to wake *specific* procs whose deadline passed.
+A sorted list with per-proc deadlines is a more natural fit.
+
+**Interaction with proc_kill:** The existing `proc_kill` wakes
+SLEEPING procs by removing them from their wait queue
+(`list_del(&p->wait_link)`). But a proc sleeping via `sys_sleep` is
+on `sleep_list` via `sleep_link`, not on a wait queue. `proc_kill`
+must distinguish which list the proc is on. We use `list_del_init`
+when removing from sleep_list (resets the node to self-pointing), and
+check `!list_empty(&p->sleep_link)` in proc_kill to detect whether
+the proc is on sleep_list. This is more robust than checking a flag
+like `wake_time` — the node's linkage state is always self-consistent
+regardless of whether any code forgot to clear a field.
+
+**Lock ordering rule:** `sleep_lock` → `p->lock`. All three sites
+that touch the sleep list (sys_sleep, wake_expired_sleepers, proc_kill)
+acquire `sleep_lock` first, then `p->lock` inside. This prevents
+ABBA deadlock on multi-core (Phase 9). The same pattern as
+`wq->lock` → `p->lock` in wait queues (see Lecture 5-2).
+
+> **How Linux does it differently:**
+>
+> Linux uses **hrtimers** (high-resolution timers) — separate timer
+> objects with a function-pointer callback. Each `nanosleep` creates an
+> `hrtimer` with `callback = hrtimer_wakeup` and an `expires` deadline.
+> These are stored in an rb-tree sorted by expiry. The core mechanism
+> is the same as ours: the scheduler arms the hardware for
+> `min(quantum, earliest pending timer)`, and the interrupt handler
+> fires callbacks for all expired entries from the front of the tree.
+>
+> The key differences from our approach:
+>
+> - **No per-task fields:** Linux's `task_struct` has no `wake_time`
+>   or `sleep_link`. The timer is a **stack-local variable** inside
+>   `sys_nanosleep` — an `hrtimer_sleeper` struct containing the
+>   deadline, callback, and a back-pointer to the task. It's inserted
+>   into the rb-tree, the task sleeps, the callback fires and wakes
+>   the task, the function returns, and the struct goes out of scope.
+>   No persistent per-task state needed. We put it in `struct proc`
+>   because our sleep list is indexed by proc directly.
+> - **Generality via callbacks:** our sleep list only does "wake a
+>   proc." Linux's hrtimers do anything — TCP retransmits, watchdogs,
+>   scheduler bandwidth throttling — each with a different callback.
+>   The timer subsystem is shared infrastructure, not sleep-specific.
+> - **Tickless idle:** when no timers are pending and no tasks are
+>   runnable, Linux doesn't arm the hardware at all — the CPU sleeps
+>   until an external interrupt (network, disk). We still arm for
+>   TIMER_INTERVAL even when idle (wastes power on real hardware,
+>   irrelevant on QEMU).
+> - **O(log n) insert:** rb-tree insertion is O(log n) vs our O(n)
+>   sorted-list insert. Matters with thousands of timers; irrelevant
+>   for our handful of sleeping procs.
+>
+> | | bobchouOS (sorted list) | Linux (hrtimer) |
+> |---|---|---|
+> | Timer state lives in | `struct proc` fields (persistent) | Stack-local `hrtimer_sleeper` (temporary) |
+> | Deadline stored in | `proc->wake_time` + sorted linked list | `hrtimer->expires` in rb-tree |
+> | Hardware armed for | `min(quantum, earliest wake_time)` | Same: `min(quantum, earliest hrtimer)` |
+> | Wake action | Direct: scan list, make RUNNABLE | Indirect: fire callback (`wake_up_process`) |
+> | Precision | Exact (same mechanism) | Exact (same mechanism) |
+> | Insert cost | O(n) — walk sorted list | O(log n) — rb-tree insert |
+> | Idle power | Timer always armed (no tickless) | No timer if nothing pending |
+> | Generality | Sleep only | Any timed event (sleep, retransmit, watchdog) |
+
+### What goes into struct proc
+
+```c
+uint64 wake_time;             // mtime deadline (0 = not sleeping for time)
+struct list_head sleep_link;  // node in global sleep_list
+```
+
+### What changes in trap.c
+
+In the timer interrupt handler (where `need_resched` is set), add a
+call to `wake_expired_sleepers()` before setting `need_resched`:
+
+```c
+case IRQ_S_SOFT:
+    csrw(sip, csrr(sip) & ~SIP_SSIP);
+    wake_expired_sleepers();    // scan sleep_list, wake those past deadline
+    if (this_cpu()->proc)
+        this_cpu()->need_resched = 1;
+    break;
+```
 
 ---
 
@@ -1265,6 +1480,7 @@ Makefile                # build user programs as ELF, embed into kernel
 | 5 | wait | status_ptr | child PID or -1 |
 | 6 | getpid | (none) | current PID |
 | 7 | kill | pid | 0 or -1 |
+| 8 | sleep | ms | 0 on success |
 
 ### bobchouOS vs xv6
 

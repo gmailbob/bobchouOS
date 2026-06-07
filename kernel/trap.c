@@ -76,6 +76,7 @@ kernel_trap(void) {
             /* Timer tick (forwarded from M-mode via SSIP).
              * Clear SSIP so we don't re-trap on sret. */
             csrw(sip, csrr(sip) & ~SIP_SSIP);
+            wake_expired_sleepers();
             if (this_cpu()->proc)
                 this_cpu()->need_resched = 1;
             break;
@@ -192,6 +193,7 @@ user_trap(void) {
         switch (code) {
         case IRQ_S_SOFT:
             csrw(sip, csrr(sip) & ~SIP_SSIP);
+            wake_expired_sleepers();
             this_cpu()->need_resched = 1;
             break;
         default:

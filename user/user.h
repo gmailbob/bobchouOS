@@ -15,6 +15,6 @@ int exec(const char *path, char **argv);
 int wait(int *status);
 int getpid(void);
 int kill(int pid);
-int sleep(int ticks);
+int sleep(int ms);
 
 #endif /* USER_H */

@@ -92,6 +92,10 @@ struct proc {
     int killed;                 /* set by kill(), checked in kernel_trap_ret and sleep loops */
     int exit_status;            /* passed to exit(), read by parent in wait() */
     struct list_head wait_link; /* node on a wait queue (only when SLEEPING) */
+
+    /* --- Sleep (sys_sleep) --- */
+    uint64 wake_time;            /* mtime deadline for timed sleep (0 = not sleeping) */
+    struct list_head sleep_link; /* node in global sleep_list */
 };
 
 /* --- struct cpu --- */
@@ -110,6 +114,7 @@ struct proc *proc_create_kernel(void (*fn)(void), const char *name);
 struct proc *proc_create_user(void);
 int proc_fork(void);
 int proc_exec(const char *path, char **argv);
+void wake_expired_sleepers(void);
 void scheduler(void);
 void run_queue_add(struct proc *p);
 void yield(void);
@@ -123,7 +128,9 @@ struct proc *this_proc(void);
 /* swtch is in swtch.S */
 extern void swtch(struct context *old, struct context *new);
 
-/* Global locks (defined in proc.c). */
+/* Global locks and lists (defined in proc.c). */
 extern struct spinlock wait_lock;
+extern struct spinlock sleep_lock;
+extern struct list_head sleep_list;
 
 #endif /* PROC_H */

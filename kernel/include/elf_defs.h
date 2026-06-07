@@ -1,5 +1,8 @@
 /*
- * elf.h — ELF64 binary format definitions for exec.
+ * elf_defs.h — ELF64 binary format definitions for exec.
+ *
+ * Named elf_defs.h (not elf.h) to avoid colliding with the system
+ * <elf.h> header in IDE tooling.
  *
  * Only the structures needed for loading executables (ELF header and
  * program headers). Section headers, symbol tables, etc. are not needed.
@@ -7,8 +10,8 @@
  * See Lecture 6-3, Part 4.
  */
 
-#ifndef ELF_H
-#define ELF_H
+#ifndef ELF_DEFS_H
+#define ELF_DEFS_H
 
 #include "types.h"
 
@@ -65,4 +68,4 @@ struct elf_phdr {
     uint64 p_align;
 };
 
-#endif /* ELF_H */
+#endif /* ELF_DEFS_H */

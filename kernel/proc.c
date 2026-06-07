@@ -31,7 +31,10 @@ static int next_pid = 0;
 struct spinlock wait_lock;
 struct spinlock run_queue_lock;
 struct spinlock pid_lock;
+struct spinlock sleep_lock;
 struct proc *init_proc;
+
+LIST_HEAD(sleep_list); /* sorted by wake_time, earliest first */
 
 /* --- PID allocation (self-contained locking) --- */
 
@@ -72,9 +75,15 @@ run_queue_add(struct proc *p) {
 /*
  * sched — switch from current process to scheduler.
  *
+ * Two lock transitions happen across sched():
+ *   Outbound: caller's p->lock crosses into the scheduler, which releases
+ *             it just after its swtch-to-us returns (see scheduler()).
+ *   Inbound:  before the scheduler swtch-es back to us, it re-acquires
+ *             p->lock. So when sched() RETURNS, p->lock is HELD — the
+ *             caller must release it (yield/wq_sleep do; proc_exit never
+ *             returns so it doesn't).
+ *
  * Precondition: caller holds p->lock (the golden rule).
- * Postcondition: scheduler releases p->lock on the other side.
- *                When sched returns, scheduler has re-acquired p->lock for us.
  */
 void
 sched(void) {
@@ -117,15 +126,31 @@ scheduler(void) {
         spin_lock(&p->lock);
         p->state = PROC_RUNNING;
         c->proc = p;
-        sbi_set_timer(read_mtime() + TIMER_INTERVAL);
 
-        /* p resumes here (kthread_start/yield) and releases p->lock we
-         * just acquired. p runs freely, then re-acquires p->lock when it
-         * calls sched() to yield back. In wq_sleep, p->lock is never
-         * released by p itself — the scheduler does it below. */
+        /* Arm timer for whichever comes first: quantum expiry or earliest sleeper.
+         * This gives precise sleep wakeup rather than up-to-one-tick latency. */
+        uint64 deadline = read_mtime() + TIMER_INTERVAL;
+        spin_lock(&sleep_lock);
+        if (!list_empty(&sleep_list)) {
+            struct proc *sleeper = list_first_entry(&sleep_list, struct proc, sleep_link);
+            if (sleeper->wake_time < deadline)
+                deadline = sleeper->wake_time;
+        }
+        spin_unlock(&sleep_lock);
+        sbi_set_timer(deadline);
+
+        /* swtch to p. p resumes wherever it last left off:
+         *   - brand-new proc: at kthread_start / user_proc_start, which
+         *     releases the p->lock we just acquired, then runs.
+         *   - a proc that previously yielded/slept: inside its sched(),
+         *     which returns into yield/wq_sleep where p releases p->lock.
+         * Either way, p releases the lock we acquired above (the inbound
+         * release). p runs freely, then re-acquires p->lock before its
+         * next sched() back to us. */
         swtch(&c->scheduler, &p->context);
 
-        /* p yielded back (holding p->lock from yield/exit/wq_sleep) */
+        /* p called sched() holding p->lock (acquired in yield/wq_sleep/
+         * proc_exit). That is the outbound release — we do it here. */
         c->proc = NULL;
         spin_unlock(&p->lock);
     }
@@ -145,8 +170,10 @@ yield(void) {
     spin_lock_irqsave(&p->lock, &irq);
     p->state = PROC_RUNNABLE;
     run_queue_add(p);
-    sched();                               /* p->lock crosses boundary */
-    spin_unlock_irqrestore(&p->lock, irq); /* scheduler re-acquired it for us */
+    sched();                               /* outbound: p->lock crosses to scheduler */
+    spin_unlock_irqrestore(&p->lock, irq); /* inbound: p->lock held (scheduler re-acquired
+                                              it before dispatching us); release and
+                                              restore the saved interrupt state */
 }
 
 /*
@@ -196,8 +223,12 @@ free_proc(struct proc *p) {
     list_del(&p->sibling);
     list_del(&p->all_list);
     list_del(&p->pid_link);
-    /* TODO(Round 6-3): free user resources — trapframe page, user code/stack
-     * pages, and page table (proc_free_pagetable). Kernel procs have none. */
+    /* free user resources */
+    if (p->pagetable) {
+        vma_free_all(p);
+        proc_free_pagetable(p->pagetable);
+        kfree(p->trapframe);
+    }
     kfree((void *)p->kstack);
     kmfree(p);
 }
@@ -256,6 +287,10 @@ proc_wait(int *status) {
  *
  * Sets p->killed = 1. If SLEEPING, wakes it so it can notice the flag.
  * Returns 0 on success, -1 if PID not found.
+ *
+ * Lock ordering: sleep_lock → p->lock (same as sys_sleep and
+ * wake_expired_sleepers). We acquire sleep_lock first when the target
+ * might be on the sleep_list.
  */
 int
 proc_kill(int pid) {
@@ -273,16 +308,24 @@ proc_kill(int pid) {
         return -1;
 
     unsigned long irq;
-    spin_lock_irqsave(&p->lock, &irq);
+    spin_lock_irqsave(&sleep_lock, &irq);
+    spin_lock(&p->lock);
     p->killed = 1;
     if (p->state == PROC_SLEEPING) {
-        /* TODO(Phase 9): should hold wq->lock for list_del, but we don't
-         * know which queue p is on. Safe on single-hart (interrupts off). */
-        list_del(&p->wait_link);
+        if (!list_empty(&p->sleep_link)) {
+            /* On sleep_list — timer sleep path. */
+            list_del_init(&p->sleep_link);
+        } else {
+            /* On a wait queue (wq_sleep path).
+             * TODO(Phase 9): should hold wq->lock for list_del, but we
+             * don't know which queue p is on. Safe on single-hart. */
+            list_del(&p->wait_link);
+        }
         p->state = PROC_RUNNABLE;
         run_queue_add(p);
     }
-    spin_unlock_irqrestore(&p->lock, irq);
+    spin_unlock(&p->lock);
+    spin_unlock_irqrestore(&sleep_lock, irq);
     return 0;
 }
 
@@ -303,16 +346,8 @@ kthread_start(void) {
     intr_on();
 }
 
-/*
- * proc_create_kernel — create a new kernel thread.
- *
- * Allocates proc, assigns PID, allocates kstack, sets up context so
- * swtch "returns" into user_proc_start (which releases p->lock, then calls fn).
- * Adds to run queue, all-procs, PID hash table.
- * Parent is init_proc for PID > 1 (NULL for idle/init themselves).
- */
-struct proc *
-proc_create_kernel(void (*fn)(void), const char *name) {
+static struct proc *
+proc_create(void (*fn)(void), const char *name) {
     struct proc *p = kmalloc(sizeof(struct proc));
     memset(p, 0, sizeof(struct proc));
 
@@ -324,24 +359,39 @@ proc_create_kernel(void (*fn)(void), const char *name) {
     /* Kernel stack */
     p->kstack = (uint64)kalloc();
     if (!p->kstack)
-        panic("proc_create_kernel: kalloc failed");
+        panic("proc_create: kalloc failed");
 
     /* Context: swtch will "ret" into fn. fn must call kthread_start()
      * as its first action (releases p->lock + enables interrupts). */
     p->context.ra = (uint64)fn;
     p->context.sp = p->kstack + PG_SIZE;
 
-    /* Initialize new 5-2 fields */
     spin_init(&p->lock, name);
     wq_init(&p->child_wq, name);
     INIT_LIST_HEAD(&p->children);
     INIT_LIST_HEAD(&p->wait_link);
+    INIT_LIST_HEAD(&p->sleep_link);
 
     /* Parent-child linkage (PID 0 and 1 have no parent) */
     if (init_proc) {
         p->parent = init_proc;
         list_add_tail(&p->sibling, &init_proc->children);
     }
+
+    return p;
+}
+
+/*
+ * proc_create_kernel — create a new kernel thread.
+ *
+ * Allocates proc, assigns PID, allocates kstack, sets up context so
+ * swtch "returns" into user_proc_start (which releases p->lock, then calls fn).
+ * Adds to run queue, all-procs, PID hash table.
+ * Parent is init_proc for PID > 1 (NULL for idle/init themselves).
+ */
+struct proc *
+proc_create_kernel(void (*fn)(void), const char *name) {
+    struct proc *p = proc_create(fn, name);
 
     /* Add to global structures */
     p->state = PROC_RUNNABLE;
@@ -365,6 +415,7 @@ proc_init(void) {
     spin_init(&wait_lock, "wait_lock");
     spin_init(&run_queue_lock, "run_queue_lock");
     spin_init(&pid_lock, "pid_lock");
+    spin_init(&sleep_lock, "sleep_lock");
 }
 
 /* --- Kernel threads --- */
@@ -392,9 +443,7 @@ idle_thread(void) {
 static void
 init_start(void) {
     kthread_start();
-    /* TODO(student): call proc_exec("init", NULL).
-     * On success, exec replaces this kernel thread with user code
-     * and never returns. On failure, panic. */
+    proc_exec("init", NULL);
     panic("init_start: exec init failed");
 }
 
@@ -408,6 +457,43 @@ void
 proc_bootstrap(void) {
     proc_create_kernel(idle_thread, "idle");            /* PID 0 */
     init_proc = proc_create_kernel(init_start, "init"); /* PID 1 */
+}
+
+/* --- Timer-based sleep (Round 6-3) --- */
+
+/*
+ * wake_expired_sleepers — wake all procs whose wake_time has passed.
+ *
+ * Called from the timer tick handler in trap.c (both kernel_trap and
+ * user_trap paths). Walks the sorted sleep_list from front (earliest
+ * deadline first), wakes expired procs, stops at the first non-expired
+ * entry.
+ *
+ * Lock ordering: sleep_lock → p->lock (same as sys_sleep and proc_kill).
+ *
+ * Note: a proc may also be removed from sleep_list by proc_kill (which
+ * checks !list_empty(&p->sleep_link) to distinguish timer-sleepers from
+ * wait-queue-sleepers). Both paths hold sleep_lock for list removal and
+ * use list_del_init to reset the node to self-pointing (the "not on any
+ * list" state).
+ */
+void
+wake_expired_sleepers(void) {
+    spin_lock(&sleep_lock);
+
+    uint64 now = read_mtime();
+    struct proc *pos, *tmp;
+    list_for_each_entry_safe(pos, tmp, &sleep_list, sleep_link) {
+        if (now < pos->wake_time)
+            break;
+        list_del_init(&pos->sleep_link);
+        spin_lock(&pos->lock);
+        pos->state = PROC_RUNNABLE;
+        run_queue_add(pos);
+        spin_unlock(&pos->lock);
+    }
+
+    spin_unlock(&sleep_lock);
 }
 
 /* --- User process creation (Round 6-3) --- */
@@ -443,12 +529,12 @@ user_proc_start(void) {
  */
 struct proc *
 proc_create_user(void) {
-    /* TODO(student): allocate proc (kmalloc + memset), assign PID,
-     * allocate kstack, init spinlock/waitqueue/lists/vma_list,
-     * allocate trapframe, create user page table (proc_pagetable),
-     * set context.ra = user_proc_start, context.sp = kstack + PG_SIZE.
-     * Return the proc (don't add to scheduler — caller does that). */
-    return 0;
+    struct proc *p = proc_create(NULL, "");
+    // vmalist
+    p->trapframe = kalloc();
+    proc_pagetable(p);
+    p->context.ra = (uint64)user_proc_start;
+    return p;
 }
 
 /*

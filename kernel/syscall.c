@@ -9,10 +9,11 @@
  */
 
 #include "proc.h"
-#include "trapframe.h"
-#include "syscall_num.h"
-#include "errno.h"
 #include "drivers/uart.h"
+#include "errno.h"
+#include "string.h"
+#include "syscall_num.h"
+#include "trapframe.h"
 
 /* --- Syscall handlers --- */
 
@@ -74,8 +75,7 @@ sys_exit(void) {
  */
 static int64
 sys_fork(void) {
-    /* TODO(student): call proc_fork() */
-    return -ENOSYS;
+    return proc_fork();
 }
 
 /*
@@ -90,10 +90,32 @@ sys_fork(void) {
  */
 static int64
 sys_exec(void) {
-    /* TODO(student): copyinstr path, copyin argv pointers + strings,
-     * call proc_exec(path, argv) */
-    (void)this_proc();
-    return -ENOSYS;
+    struct proc *p = this_proc();
+    uint64 upath = p->trapframe->a0;
+    uint64 uargv = p->trapframe->a1;
+
+    char path[64];
+    if (copyinstr(p->pagetable, path, upath, sizeof(path)) < 0)
+        return -EFAULT;
+
+    char kargv_buf[512];
+    int off = 0;
+    char *argv[16];
+    int argc = 0;
+    for (; argc < (int)(sizeof(argv) / sizeof(argv[0])) - 1; argc++) {
+        uint64 arg_va;
+        if (copyin(p->pagetable, &arg_va, uargv + argc * 8, 8) < 0)
+            return -EFAULT;
+        if (arg_va == 0)
+            break;
+        argv[argc] = kargv_buf + off;
+        if (copyinstr(p->pagetable, argv[argc], arg_va, sizeof(kargv_buf) - off) < 0)
+            return -EFAULT;
+        off += strlen(argv[argc]) + 1;
+    }
+    argv[argc] = 0;
+
+    return proc_exec(path, argv);
 }
 
 /*
@@ -106,9 +128,13 @@ sys_exec(void) {
  */
 static int64
 sys_wait(void) {
-    /* TODO(student): call proc_wait(&kstatus), copyout status to user */
-    (void)this_proc();
-    return -ENOSYS;
+    int kstatus;
+    int pid = proc_wait(&kstatus);
+    struct proc *p = this_proc();
+    if (pid > 0 && p->trapframe->a0)
+        if (copyout(p->pagetable, p->trapframe->a0, &kstatus, sizeof(int)) < 0)
+            return -EFAULT;
+    return pid;
 }
 
 /*
@@ -134,20 +160,49 @@ sys_kill(void) {
 }
 
 /*
- * sys_sleep — suspend the calling process for a number of timer ticks.
+ * sys_sleep — suspend the calling process for a duration in milliseconds.
  *
  * Args (from trapframe):
- *   a0 = number of ticks to sleep
+ *   a0 = milliseconds to sleep
  *
  * Returns 0 on success.
+ *
+ * Design: sorted sleep_list + precise hardware arming. See Lecture 6-3, Part 7.
+ * Lock ordering: sleep_lock → p->lock (same as wake_expired_sleepers, proc_kill).
  */
 static int64
 sys_sleep(void) {
-    /* TODO(student): read tick count from trapframe->a0,
-     * compute deadline = current_mtime + ticks * TIMER_INTERVAL,
-     * add to sleep list, yield. Timer interrupt wakes when deadline passes. */
-    (void)this_proc();
-    return -ENOSYS;
+    struct proc *p = this_proc();
+    uint64 ms = p->trapframe->a0;
+    p->wake_time = read_mtime() + MS_TO_MTIME(ms);
+
+    /* Insert into sleep_list sorted by wake_time (earliest first).
+     * Lock ordering: sleep_lock → p->lock. */
+    unsigned long irq;
+    spin_lock_irqsave(&sleep_lock, &irq);
+
+    struct list_head *insert_point = &sleep_list;
+    struct proc *pos;
+    list_for_each_entry(pos, &sleep_list, sleep_link) {
+        if (pos->wake_time > p->wake_time) {
+            insert_point = &pos->sleep_link;
+            break;
+        }
+    }
+    list_add_tail(&p->sleep_link, insert_point);
+
+    /* Golden rule: only p->lock crosses the sched boundary. */
+    spin_lock(&p->lock);
+    p->state = PROC_SLEEPING;
+    spin_unlock(&sleep_lock); /* plain: keep irqs off for sched */
+
+    sched(); /* outbound: p->lock crosses to scheduler */
+
+    /* Inbound: scheduler re-acquired p->lock before dispatching us.
+     * Release it and restore interrupt state. */
+    p->wake_time = 0;
+    spin_unlock_irqrestore(&p->lock, irq);
+    return 0;
 }
 
 /* --- Dispatch table --- */

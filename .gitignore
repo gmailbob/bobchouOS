@@ -2,8 +2,6 @@
 *.o
 *.elf
 *.bin
-user/init
-user/hello
 
 # Documents
 *.pdf

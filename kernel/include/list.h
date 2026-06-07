@@ -168,6 +168,17 @@ list_del(struct list_head *entry) {
 }
 
 /*
+ * list_del_init — remove from list and re-initialize to empty (self-pointing).
+ * After this, list_empty(entry) returns true, so you can use the node's
+ * linkage state as a "currently on a list?" flag.
+ */
+static inline void
+list_del_init(struct list_head *entry) {
+    __list_del(entry->prev, entry->next);
+    INIT_LIST_HEAD(entry);
+}
+
+/*
  * list_empty — return 1 if the list has no entries (head points to itself).
  */
 static inline int
@@ -221,6 +232,9 @@ list_is_singular(struct list_head *head) {
 
 /*
  * list_for_each_entry — iterate over list entries (enclosing structs).
+ *
+ * WARNING: do not use `pos` after the loop without a `break` — if the loop
+ * completes, pos holds container_of(head) which is NOT a valid struct pointer.
  *
  * @pos:    type * used as loop cursor
  * @head:   the list head (sentinel)

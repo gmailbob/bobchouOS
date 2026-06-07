@@ -43,9 +43,18 @@ wq_sleep(struct wait_queue *wq, struct spinlock *lk) {
 
     spin_unlock(lk);        /* condition lock released — lost wakeup solved */
     spin_unlock(&wq->lock); /* done modifying queue */
-    sched();                /* p->lock crosses boundary, released by scheduler */
 
-    spin_lock(lk); /* re-acquire condition lock before returning */
+    sched(); /* outbound: p->lock crosses to the scheduler, which releases it
+              * after swtch returns to it (see scheduler()). */
+
+    /* Inbound: when the scheduler re-dispatches us, it re-acquires p->lock
+     * before swtch-ing back, so p->lock is HELD here. Release it.
+     * Plain unlock — interrupts stay off until the caller's irqrestore on the
+     * condition lock. Without this, a caller that loops back into wq_sleep
+     * would re-lock a held p->lock and deadlock (single-hart: infinite spin). */
+    spin_unlock(&p->lock);
+
+    spin_lock(lk); /* re-acquire condition lock before returning (POSIX contract) */
 }
 
 /*

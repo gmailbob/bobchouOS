@@ -21,11 +21,14 @@
  */
 struct vma *
 vma_create(uint64 start, uint64 end, int perm) {
-    /* TODO(student): kmalloc a struct vma, initialize fields, return it */
-    (void)start;
-    (void)end;
-    (void)perm;
-    return 0;
+    struct vma *pvma = (struct vma *)kmalloc(sizeof(struct vma));
+    if (!pvma)
+        return NULL;
+    pvma->start = start;
+    pvma->end = end;
+    pvma->perm = perm;
+    INIT_LIST_HEAD(&pvma->link);
+    return pvma;
 }
 
 /*
@@ -33,9 +36,15 @@ vma_create(uint64 start, uint64 end, int perm) {
  */
 void
 vma_add(struct proc *p, struct vma *v) {
-    /* TODO(student): walk p->vma_list, insert v in sorted order */
-    (void)p;
-    (void)v;
+    struct list_head *insert_point = &p->vma_list;
+    struct vma *pos;
+    list_for_each_entry(pos, &p->vma_list, link) {
+        if (v->start > pos->start) {
+            insert_point = &pos->link;
+            break;
+        }
+    }
+    list_add_tail(insert_point, &v->link);
 }
 
 /*
@@ -45,10 +54,12 @@ vma_add(struct proc *p, struct vma *v) {
  */
 struct vma *
 vma_find(struct proc *p, uint64 addr) {
-    /* TODO(student): linear scan of p->vma_list, return vma where start <= addr < end */
-    (void)p;
-    (void)addr;
-    return 0;
+    struct vma *pos;
+    list_for_each_entry(pos, &p->vma_list, link) {
+        if (pos->start <= addr && addr < pos->end)
+            return pos;
+    }
+    return NULL;
 }
 
 /*
@@ -61,10 +72,19 @@ vma_find(struct proc *p, uint64 addr) {
  */
 int
 vma_dup_all(struct proc *dst, struct proc *src) {
-    /* TODO(student): iterate src->vma_list, copy each region page-by-page */
-    (void)dst;
-    (void)src;
-    return -1;
+    /* iterate src->vma_list, copy each region page-by-page */
+    struct vma *pos;
+    list_for_each_entry(pos, &src->vma_list, link) {
+        for (uint64 va = pos->start; va < pos->end; va += PG_SIZE) {
+            pte_t *pte = walk(src->pagetable, va, 0);
+            uint64 pa = pte_to_pa(*pte);
+            void *pg = kalloc();
+            memcpy(pg, (void *)pa, PG_SIZE);
+            map_pages(dst->pagetable, va, PG_SIZE, pa, pos->perm);
+        }
+        list_add_tail(&vma_create(pos->start, pos->end, pos->perm)->link, &dst->vma_list);
+    }
+    return 0;
 }
 
 /*
@@ -75,7 +95,15 @@ vma_dup_all(struct proc *dst, struct proc *src) {
  */
 void
 vma_free_all(struct proc *p) {
-    /* TODO(student): iterate p->vma_list with list_for_each_entry_safe,
-     * walk pages, page_put each, clear PTE, kmfree the vma */
-    (void)p;
+    struct vma *pos, *tmp;
+    list_for_each_entry_safe(pos, tmp, &p->vma_list, link) {
+        for (uint64 va = pos->start; va < pos->end; va += PG_SIZE) {
+            pte_t *pte = walk(p->pagetable, va, 0);
+            uint64 pa = pte_to_pa(*pte);
+            page_put((void *)pa);
+            *pte = 0;
+        }
+        list_del(&pos->link);
+        kmfree(pos);
+    }
 }
