@@ -614,11 +614,29 @@ int elf_to_pte(uint32 flags) {
 }
 ```
 
-Typical ELF segments:
-- `.text` → PF_R | PF_X → PTE_R | PTE_X | PTE_U (execute, read-only)
-- `.data` + `.bss` → PF_R | PF_W → PTE_R | PTE_W | PTE_U (read-write)
+In practice, the linker produces exactly two PT_LOAD segments:
 
-Each segment becomes one VMA with matching permissions.
+| Segment | Sections inside | ELF flags | PTE bits |
+|---------|-----------------|-----------|----------|
+| Text | .text, .rodata | PF_R \| PF_X | PTE_R \| PTE_X \| PTE_U |
+| Data | .data, .bss | PF_R \| PF_W | PTE_R \| PTE_W \| PTE_U |
+
+The text segment is read+execute (code and constants). The data
+segment is read+write (initialized globals in .data, uninitialized
+globals in .bss). Each segment becomes one VMA with matching
+permissions.
+
+For the data segment specifically:
+- `p_filesz` = size of .data only (initialized globals stored in file)
+- `p_memsz` = size of .data + .bss (total in-memory footprint)
+
+The .bss portion (`memsz - filesz`) is never stored in the file —
+storing megabytes of zeros would waste disk space. The loader is
+responsible for zeroing the difference. Our exec relies on `kalloc`
+returning zeroed pages — bytes beyond `filesz` are already zero
+without an explicit memset. Note that `p_memsz` (not `p_filesz`)
+determines the segment's true in-memory extent, which matters in
+Round 6-4 when computing where the heap starts.
 
 ---
 
@@ -1428,6 +1446,186 @@ hello world
 
 Init forks and execs forever, each child prints and exits. The first
 real process tree.
+
+---
+
+## Part 10: End-to-End Trace — From Boot to "hello, bobchouOS!"
+
+This section traces the full execution path from kernel boot through init's
+fork, exec of hello, hello's write + sleep + exit, and init reaping the
+zombie. Every page-table switch, lock crossing, and register handoff is
+called out. Read it alongside the code.
+
+### Phase A: init enters user mode
+
+After boot, the scheduler dispatches `init_start` (PID 1, a kernel
+thread). `init_start` calls `kthread_start()` (releases p->lock, enables
+interrupts), then:
+
+```c
+proc_exec("init", NULL);  // load init ELF, build address space
+user_trap_ret();           // enter user mode — never returns
+```
+
+`proc_exec` builds a fresh page table, loads the init ELF's PT_LOAD
+segments, allocates a stack, sets `trapframe->epc = _start`,
+`trapframe->sp = USER_STACK_TOP`, `a0 = 0` (argc), `a1 = sp` (argv,
+pointing at just a NULL terminator since argv was NULL).
+
+`user_trap_ret` sets `stvec` → trampoline, `sepc` → epc, clears
+`sstatus.SPP` (return to U-mode), calls `user_ret` which switches to
+init's user page table, restores all registers from trapframe, and
+`sret` — init is now running in U-mode at `_start`.
+
+`_start` (start.S) calls `main(argc=0, argv)`. Init runs:
+
+```c
+int pid = fork();
+```
+
+### Phase B: fork — init duplicates itself
+
+`fork` → `usys.S` loads `a7 = SYS_fork` → `ecall` → hardware traps to
+TRAMPOLINE VA → `user_vec` saves all 31 registers to trapframe →
+switches to kernel page table → jumps to `user_trap`.
+
+`user_trap`:
+- `epc += 4` (skip past ecall)
+- `intr_on()` (timer preemption during syscall)
+- `trapframe->a0 = syscall()` → dispatches to `sys_fork` → `proc_fork`
+
+`proc_fork`:
+1. `proc_create_user()` — allocates child proc + kstack + trapframe +
+   page table (trampoline + trapframe mapped, no user pages)
+2. `vma_dup_all(child, parent)` — deep-copies every page of init's
+   address space into the child's page table
+3. `memcpy(child->trapframe, parent->trapframe)` — child will resume at
+   the same epc (the `ret` after ecall) with the same sp/GPRs
+4. `child->trapframe->a0 = 0` — fork returns 0 in the child
+5. Fix child's kernel bootstrap fields (kernel_sp, kernel_satp, etc.)
+6. Link child to parent, add to scheduler
+
+Returns `child->pid` (2) → `syscall()` writes it to
+`parent->trapframe->a0` → `user_trap_ret` → `user_ret` → `sret`.
+
+Init resumes in U-mode with `a0 = 2` → `pid = 2`, takes the parent
+branch (`pid != 0`) → calls `wait(&status)` → traps → `sys_wait` →
+`proc_wait` → no zombie yet → `wq_sleep` → init sleeps.
+
+### Phase C: child scheduled — calls exec("hello")
+
+The scheduler picks the child (PID 2). Its `context.ra = user_proc_start`:
+- `user_proc_start` releases p->lock, calls `user_trap_ret`
+- `user_trap_ret` → `user_ret` → `sret` → child enters U-mode at
+  the `ret` after ecall (usys fork stub), with `a0 = 0`
+
+Back in init.c: `pid = 0` → child branch:
+
+```c
+char *argv[] = {"...", "bobchouOS", 0};
+exec("hello", argv);
+```
+
+`exec` → `usys.S` loads `a7 = SYS_exec`, `a0 = &"hello"`,
+`a1 = &argv[0]` → `ecall` → trap → `sys_exec`.
+
+`sys_exec`:
+- `copyinstr` copies path "hello" from user VA into `char path[64]`
+- Loop: `copyin` each argv pointer, `copyinstr` each string into
+  `kargv_buf[512]`
+- Calls `proc_exec("hello", argv)` with kernel-resident copies
+
+`proc_exec`:
+- Validates ELF header (magic, class, machine)
+- Builds a NEW page table + VMA list (build-new-then-swap)
+- Loads each PT_LOAD segment: allocates zeroed pages, copies filesz
+  bytes from the embedded ELF, maps with ELF permissions
+- Allocates stack page, creates stack VMA
+- Pushes argv onto stack: strings first (high→low), then pointer array
+- **Swaps**: frees old address space, installs new PT + VMAs
+- Sets trapframe: `epc = hello's _start`, `sp = stack after argv`,
+  `a0 = argc (2)`, `a1 = &argv[0] on stack`
+- Updates `p->name` to "hello"
+- Returns `argc` (2)
+
+`sys_exec` returns 2 → `syscall()` writes to `trapframe->a0` (agrees
+with the `a0` proc_exec already set). `user_trap` → `user_trap_ret` →
+`user_ret` → `sret` — but now into **hello's address space** at
+hello's `_start`, with the old init code completely gone from this
+process.
+
+### Phase D: hello runs — write, sleep, write
+
+`_start` → `main(argc=2, argv)`:
+
+```c
+char *name = argv[1];   // "bobchouOS" — pointer to string on the stack
+write(1, "hello, ", 7); // syscall → copyin → uart_putc × 7
+```
+
+`write` → ecall → `sys_write`:
+- `copyin(p->pagetable, kbuf, uaddr, 7)` — walks hello's page table to
+  find the physical address of the "hello, " string (in .rodata), copies
+  7 bytes into a kernel-stack buffer
+- `uart_putc` × 7 — stores each byte to UART MMIO (0x10000000)
+- QEMU outputs "hello, " to the terminal
+
+Two more `write` calls output the name and "!\n". Console shows:
+`hello, bobchouOS!`
+
+Then:
+
+```c
+sleep(1000); // 1 second
+```
+
+`sleep` → ecall → `sys_sleep`:
+- Computes `wake_time = read_mtime() + 10,000,000` (1s at 10MHz)
+- Inserts hello into sorted `sleep_list` (front — only sleeper)
+- `p->state = PROC_SLEEPING` → `sched()` — hello off the run queue
+
+The scheduler runs idle (and init, which is itself sleeping in wait).
+Each timer tick: `wake_expired_sleepers` checks `now >= wake_time` — not
+yet. After ~100 ticks (~1 second), the scheduler arms the timer
+precisely for hello's wake_time. Timer fires → `wake_expired_sleepers`
+removes hello from sleep_list, sets RUNNABLE, adds to run queue.
+
+Scheduler dispatches hello. `sys_sleep` resumes:
+- `wake_time = 0`, `spin_unlock_irqrestore` — returns 0
+
+Hello prints "exiting after 1s sleep\n" (same write path), then:
+
+```c
+exit(0);
+```
+
+### Phase E: exit and reap (brief — see Lecture 5-2 for details)
+
+`exit(0)` → `sys_exit` → `proc_exit(0)`:
+- Wakes init (sleeping on child_wq) via `wq_wake_one`
+- Sets hello to PROC_ZOMBIE, calls `sched()` — never returns
+
+Init wakes inside `proc_wait`, finds hello as a ZOMBIE:
+- Reads `exit_status = 0`
+- `free_proc(hello)` — reclaims all memory (VMAs + pages, page table,
+  trapframe, kstack, proc struct)
+- Returns PID 2 to `sys_wait` → `copyout` status to user → returns to
+  user init
+
+Init loops: `wait(&status)` → no more children → returns -1 → loops →
+system idles forever.
+
+### Console output timeline
+
+```
+bobchouOS is booting...
+[kernel boot messages]
+starting scheduler...
+hello, bobchouOS!
+[~1 second pause]
+exiting after 1s sleep
+[system idle]
+```
 
 ---
 

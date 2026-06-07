@@ -12,10 +12,10 @@
 
 int
 main(void) {
-    /* Spawn hello as a one-time test */
+    /* Spawn hello as a one-time test — pass a name via argv */
     int pid = fork();
     if (pid == 0) {
-        char *argv[] = {"hello", 0};
+        char *argv[] = {"...", "bobchouOS", 0};
         exec("hello", argv);
         exit(1);
     }

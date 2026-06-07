@@ -253,14 +253,17 @@ proc_exec(const char *path, char **argv) {
     /* Set up trapframe for user entry */
     p->trapframe->epc = elf->e_entry;
     p->trapframe->sp = sp;
+    p->trapframe->a0 = argc; /* main's first arg */
+    p->trapframe->a1 = sp;   /* main's second arg: &argv[0] on the stack */
     p->trapframe->kernel_satp = csrr(satp);
     p->trapframe->kernel_sp = p->kstack + PG_SIZE;
     p->trapframe->user_trap = (uint64)user_trap;
     p->trapframe->hartid = 0;
 
-    /* Ensure this process enters user mode via user_proc_start */
-    extern void user_proc_start(void);
-    p->context.ra = (uint64)user_proc_start;
+    /* Update process name to the new program (like Linux's comm field) */
+    memset(p->name, 0, sizeof(p->name));
+    for (int i = 0; i < PROC_NAME_LEN - 1 && path[i]; i++)
+        p->name[i] = path[i];
 
     return argc;
 

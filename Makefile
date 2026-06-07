@@ -59,7 +59,8 @@ TEST_OBJS = kernel/test/run_tests.o \
             kernel/test/test_hashtable.o \
             kernel/test/test_spinlock.o \
             kernel/test/test_wait_queue.o \
-            kernel/test/test_proc.o
+            kernel/test/test_proc.o \
+            kernel/test/test_vma.o
 
 QEMU    = qemu-system-riscv64
 QFLAGS  = -machine virt -nographic -bios none -kernel $(TARGET)

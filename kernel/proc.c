@@ -363,9 +363,28 @@ kthread_start(void) {
     intr_on();
 }
 
+/*
+ * proc_create — shared base for all process allocation.
+ *
+ * Allocates and zeroes a proc struct, assigns a PID, allocates a kernel
+ * stack, initializes synchronization primitives and list heads, and links
+ * the proc into init_proc's children (default parent).
+ *
+ * Does NOT add to the run queue, all_procs, or pid_table — callers do
+ * that after finishing their type-specific setup.
+ *
+ * fn: the function swtch will "ret" into on first dispatch.
+ *   - kernel threads: the thread function (e.g. idle_thread, init_start)
+ *   - user procs: user_proc_start (releases p->lock, calls user_trap_ret)
+ *
+ * Returns NULL on allocation failure (caller decides whether to panic or
+ * propagate the error gracefully).
+ */
 static struct proc *
 proc_create(void (*fn)(void), const char *name) {
     struct proc *p = kmalloc(sizeof(struct proc));
+    if (!p)
+        return NULL;
     memset(p, 0, sizeof(struct proc));
 
     /* Identity */
@@ -375,11 +394,12 @@ proc_create(void (*fn)(void), const char *name) {
 
     /* Kernel stack */
     p->kstack = (uint64)kalloc();
-    if (!p->kstack)
-        panic("proc_create: kalloc failed");
+    if (!p->kstack) {
+        kmfree(p);
+        return NULL;
+    }
 
-    /* Context: swtch will "ret" into fn. fn must call kthread_start()
-     * as its first action (releases p->lock + enables interrupts). */
+    /* First dispatch: swtch restores this context and "ret"s into fn. */
     p->context.ra = (uint64)fn;
     p->context.sp = p->kstack + PG_SIZE;
 
@@ -400,16 +420,21 @@ proc_create(void (*fn)(void), const char *name) {
 }
 
 /*
- * proc_create_kernel — create a new kernel thread.
+ * proc_create_kernel — create and publish a kernel thread.
  *
- * Allocates proc, assigns PID, allocates kstack, sets up context so
- * swtch "returns" into user_proc_start (which releases p->lock, then calls fn).
- * Adds to run queue, all-procs, PID hash table.
- * Parent is init_proc for PID > 1 (NULL for idle/init themselves).
+ * Calls proc_create(fn, name) for the base allocation, then marks the
+ * process RUNNABLE and adds it to the run queue, all_procs list, and PID
+ * hash table. On first dispatch, swtch "returns" into fn; fn must call
+ * kthread_start() as its first action (releases p->lock + enables irqs).
+ *
+ * Panics on OOM — kernel threads are created during boot where failure
+ * is unrecoverable.
  */
 struct proc *
 proc_create_kernel(void (*fn)(void), const char *name) {
     struct proc *p = proc_create(fn, name);
+    if (!p)
+        panic("proc_create_kernel: out of memory");
 
     /* Add to global structures */
     p->state = PROC_RUNNABLE;
@@ -544,13 +569,11 @@ user_proc_start(void) {
 /*
  * proc_create_user — allocate a user process with an empty address space.
  *
- * Allocates the proc struct, kernel stack (in proc_create), trapframe, and
- * a user page table (trampoline + trapframe mapped; no user pages yet).
- * The caller (fork or exec) then fills in the address space and registers.
- *
- * Sets context.ra = user_proc_start so the first time the scheduler swtches
- * to this process it releases p->lock and drops to user mode (rather than
- * "returning" into a kernel thread function as kernel threads do).
+ * Calls proc_create with user_proc_start as the entry stub (on first
+ * dispatch, swtch "returns" into user_proc_start which releases p->lock
+ * and calls user_trap_ret to drop into U-mode). Then allocates a
+ * trapframe and user page table (trampoline + trapframe mapped; no user
+ * pages yet). The caller (fork or exec) fills in the address space.
  *
  * Returns NULL on allocation failure (caller must handle it).
  *
@@ -558,7 +581,7 @@ user_proc_start(void) {
  */
 struct proc *
 proc_create_user(void) {
-    struct proc *p = proc_create(NULL, "");
+    struct proc *p = proc_create(user_proc_start, "");
     if (!p)
         return NULL;
     p->trapframe = kalloc();
@@ -577,7 +600,6 @@ proc_create_user(void) {
         kmfree(p);
         return NULL;
     }
-    p->context.ra = (uint64)user_proc_start;
     return p;
 }
 

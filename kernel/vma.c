@@ -37,14 +37,14 @@
  */
 struct vma *
 vma_create(uint64 start, uint64 end, int perm) {
-    struct vma *pvma = (struct vma *)kmalloc(sizeof(struct vma));
-    if (!pvma)
+    struct vma *v = kmalloc(sizeof(struct vma));
+    if (!v)
         return NULL;
-    pvma->start = start;
-    pvma->end = end;
-    pvma->perm = perm;
-    INIT_LIST_HEAD(&pvma->link);
-    return pvma;
+    v->start = start;
+    v->end = end;
+    v->perm = perm;
+    INIT_LIST_HEAD(&v->link);
+    return v;
 }
 
 /*

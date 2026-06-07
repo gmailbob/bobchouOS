@@ -69,4 +69,49 @@ test_vm(void) {
     uint64 satp_val = csrr(satp);
     TEST_ASSERT((satp_val >> 60) == 8, "satp MODE == Sv39 (8)");
     TEST_ASSERT((satp_val & 0xFFFFFFFFFFF) != 0, "satp PPN != 0");
+
+    /* --- page_get / page_put (Round 6-3) --- */
+
+    void *test_page = kalloc(); /* refcount = 1 */
+    struct page *pg_meta = pa_to_page((uint64)test_page);
+    TEST_ASSERT(pg_meta->refcount == 1, "kalloc: refcount starts at 1");
+
+    page_get(test_page); /* refcount = 2 */
+    TEST_ASSERT(pg_meta->refcount == 2, "page_get: refcount incremented to 2");
+
+    page_put(test_page); /* refcount = 1 (still alive) */
+    TEST_ASSERT(pg_meta->refcount == 1, "page_put: refcount decremented to 1");
+
+    page_put(test_page); /* refcount = 1 → kfree → refcount = 0 */
+    TEST_ASSERT(pg_meta->refcount == 0, "page_put: page freed (refcount 0)");
+
+    /* --- copyinstr (Round 6-3) --- */
+
+    /* Build a mini user page table with one page containing a test string */
+    pte_t *cpt = (pte_t *)kalloc();
+    memset(cpt, 0, PG_SIZE);
+    char *upage = kalloc();
+    memset(upage, 0, PG_SIZE);
+    upage[0] = 'h';
+    upage[1] = 'i';
+    upage[2] = '\0';
+    map_pages(cpt, 0x1000, PG_SIZE, (uint64)upage, PTE_R | PTE_U);
+
+    char dst[16];
+    memset(dst, 0xFF, sizeof(dst));
+    int r = copyinstr(cpt, dst, 0x1000, sizeof(dst));
+    TEST_ASSERT(r == 0, "copyinstr: returns 0 on success");
+    TEST_ASSERT(dst[0] == 'h' && dst[1] == 'i' && dst[2] == '\0',
+                "copyinstr: copies string correctly with null terminator");
+
+    /* copyinstr on unmapped address returns -EFAULT */
+    r = copyinstr(cpt, dst, 0x9000, sizeof(dst));
+    TEST_ASSERT(r < 0, "copyinstr: returns error on unmapped VA");
+
+    /* copyinstr with max too short returns -ENAMETOOLONG */
+    upage[0] = 'a';
+    upage[1] = 'b';
+    upage[2] = 'c'; /* no null in first 2 bytes */
+    r = copyinstr(cpt, dst, 0x1000, 2);
+    TEST_ASSERT(r < 0, "copyinstr: returns error when no null within max");
 }

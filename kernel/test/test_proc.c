@@ -1,10 +1,9 @@
 /*
- * test_proc.c — Tests for process lifecycle (Round 5-2 additions).
+ * test_proc.c — Tests for process creation and fields.
  *
- * Full lifecycle tests (exit→zombie→wait reaps) require the scheduler
- * and are tested via `make run`. Unit tests here cover what can be
- * verified without scheduling: creation, parent-child linkage, PID
- * allocation, and kill on invalid PID.
+ * Covers proc_create_kernel (Phase 5) and proc_create_user (Phase 6).
+ * Full lifecycle tests (exit→zombie→wait, fork, exec) require the
+ * scheduler and are tested via `make run`.
  */
 
 #include "test/test.h"
@@ -37,10 +36,17 @@ test_proc(void) {
     TEST_ASSERT(p->killed == 0, "proc_create_kernel: killed = 0");
     TEST_ASSERT(p->exit_status == 0, "proc_create_kernel: exit_status = 0");
 
-    /* New 5-2 fields initialized */
+    /* 5-2 fields initialized */
     TEST_ASSERT(p->lock.locked == 0, "proc_create_kernel: lock initialized");
     TEST_ASSERT(list_empty(&p->children), "proc_create_kernel: children list empty");
     TEST_ASSERT(list_empty(&p->child_wq.head), "proc_create_kernel: child_wq empty");
+
+    /* 6-3 fields initialized */
+    TEST_ASSERT(list_empty(&p->vma_list), "proc_create_kernel: vma_list empty");
+    TEST_ASSERT(list_empty(&p->sleep_link), "proc_create_kernel: sleep_link self-pointing");
+    TEST_ASSERT(p->wake_time == 0, "proc_create_kernel: wake_time = 0");
+    TEST_ASSERT(p->pagetable == 0, "proc_create_kernel: no pagetable (kernel thread)");
+    TEST_ASSERT(p->trapframe == 0, "proc_create_kernel: no trapframe (kernel thread)");
 
     /* Parent-child linkage */
     TEST_ASSERT(p->parent == init_proc, "proc_create_kernel: parent = init_proc");
@@ -62,4 +68,15 @@ test_proc(void) {
 
     /* proc_kill on invalid PID returns -1 */
     TEST_ASSERT(proc_kill(99999) == -1, "proc_kill: invalid PID returns -1");
+
+    /* proc_create_user: has trapframe + pagetable + user_proc_start */
+    struct proc *up = proc_create_user();
+    TEST_ASSERT(up != 0, "proc_create_user: returns non-NULL");
+    TEST_ASSERT(up->trapframe != 0, "proc_create_user: trapframe allocated");
+    TEST_ASSERT(up->pagetable != 0, "proc_create_user: pagetable allocated");
+    TEST_ASSERT(list_empty(&up->vma_list), "proc_create_user: vma_list empty (no user pages yet)");
+    extern void user_proc_start(void);
+    TEST_ASSERT(up->context.ra == (uint64)user_proc_start,
+                "proc_create_user: ra = user_proc_start");
+    TEST_ASSERT(up->context.sp == up->kstack + 4096, "proc_create_user: sp = top of kstack");
 }

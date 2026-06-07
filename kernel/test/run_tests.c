@@ -22,6 +22,7 @@ void test_hashtable(void);
 void test_spinlock(void);
 void test_wait_queue(void);
 void test_proc(void);
+void test_vma(void);
 
 void
 run_tests(void) {
@@ -38,6 +39,7 @@ run_tests(void) {
     test_spinlock();
     test_wait_queue();
     test_proc();
+    test_vma();
 
     kprintf("\n=== results: %d passed, %d failed ===\n\n", test_pass, test_fail);
 }
