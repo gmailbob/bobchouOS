@@ -127,8 +127,19 @@ scheduler(void) {
         p->state = PROC_RUNNING;
         c->proc = p;
 
-        /* Arm timer for whichever comes first: quantum expiry or earliest sleeper.
-         * This gives precise sleep wakeup rather than up-to-one-tick latency. */
+        /* Arm timer for whichever comes first: quantum expiry or the earliest
+         * sleeper's deadline. This gives precise sleep wakeup instead of
+         * up-to-one-tick latency.
+         *
+         * LOCK ORDER NOTE: here we take sleep_lock while holding p->lock
+         * (p->lock -> sleep_lock). Everywhere else the order is the reverse
+         * (sleep_lock -> p->lock: see sys_sleep, wake_expired_sleepers,
+         * proc_kill). That inversion is an ABBA hazard. It is safe ONLY on a
+         * single hart, because the scheduler runs with interrupts off and is
+         * the sole holder of p->lock in this window, so no other context can
+         * be mid-(sleep_lock,p->lock) concurrently. Phase 9 (multi-core) must
+         * fix this — e.g. snapshot the earliest deadline under sleep_lock
+         * before acquiring p->lock. */
         uint64 deadline = read_mtime() + TIMER_INTERVAL;
         spin_lock(&sleep_lock);
         if (!list_empty(&sleep_list)) {
@@ -214,23 +225,29 @@ proc_exit(int status) {
 }
 
 /*
- * free_proc — remove a zombie process from all data structures and free it.
+ * free_proc — unlink a zombie from all containers and release its memory.
  *
- * Precondition: caller holds wait_lock.
+ * Precondition: caller holds wait_lock (reaping is serialized with exit).
+ *
+ * User resources are freed only for user processes (kernel threads have no
+ * pagetable/trapframe). Order matters: vma_free_all must run BEFORE
+ * proc_free_pagetable, because it walks the page table to find and page_put
+ * the leaf user pages; proc_free_pagetable then frees the table's own
+ * (intermediate) pages. The trapframe is a separate kalloc'd page.
  */
 static void
 free_proc(struct proc *p) {
-    list_del(&p->sibling);
-    list_del(&p->all_list);
-    list_del(&p->pid_link);
-    /* free user resources */
-    if (p->pagetable) {
-        vma_free_all(p);
-        proc_free_pagetable(p->pagetable);
-        kfree(p->trapframe);
+    list_del(&p->sibling);  /* off parent's children list */
+    list_del(&p->all_list); /* off the global all_procs list */
+    list_del(&p->pid_link); /* out of the pid hash table */
+
+    if (p->pagetable) {                    /* user process? */
+        vma_free_all(p);                   /* free user pages (leaf), clear PTEs */
+        proc_free_pagetable(p->pagetable); /* free page-table pages themselves */
+        kfree(p->trapframe);               /* free the trapframe page */
     }
-    kfree((void *)p->kstack);
-    kmfree(p);
+    kfree((void *)p->kstack); /* every proc has a kernel stack */
+    kmfree(p);                /* finally the proc struct */
 }
 
 /*
@@ -369,6 +386,7 @@ proc_create(void (*fn)(void), const char *name) {
     spin_init(&p->lock, name);
     wq_init(&p->child_wq, name);
     INIT_LIST_HEAD(&p->children);
+    INIT_LIST_HEAD(&p->vma_list);
     INIT_LIST_HEAD(&p->wait_link);
     INIT_LIST_HEAD(&p->sleep_link);
 
@@ -429,6 +447,10 @@ idle_thread(void) {
     }
 }
 
+/* Defined in trap.c */
+void user_trap(void);
+void user_trap_ret(void);
+
 /*
  * init_start — PID 1 kernel thread that execs into user-mode init.
  *
@@ -443,8 +465,9 @@ idle_thread(void) {
 static void
 init_start(void) {
     kthread_start();
-    proc_exec("init", NULL);
-    panic("init_start: exec init failed");
+    if (proc_exec("init", NULL) < 0)
+        panic("init_start: exec init failed");
+    user_trap_ret(); /* enter user mode — never returns */
 }
 
 /*
@@ -469,6 +492,9 @@ proc_bootstrap(void) {
  * deadline first), wakes expired procs, stops at the first non-expired
  * entry.
  *
+ * Precondition: called from the timer interrupt handler, so interrupts are
+ * already off — hence plain spin_lock on sleep_lock (no irqsave needed).
+ *
  * Lock ordering: sleep_lock → p->lock (same as sys_sleep and proc_kill).
  *
  * Note: a proc may also be removed from sleep_list by proc_kill (which
@@ -482,11 +508,11 @@ wake_expired_sleepers(void) {
     spin_lock(&sleep_lock);
 
     uint64 now = read_mtime();
-    struct proc *pos, *tmp;
+    struct proc *pos, *tmp; /* _safe: we list_del_init each node mid-loop */
     list_for_each_entry_safe(pos, tmp, &sleep_list, sleep_link) {
         if (now < pos->wake_time)
-            break;
-        list_del_init(&pos->sleep_link);
+            break; /* list is sorted — all later entries are still in the future */
+        list_del_init(&pos->sleep_link); /* off sleep_list; node now self-pointing */
         spin_lock(&pos->lock);
         pos->state = PROC_RUNNABLE;
         run_queue_add(pos);
@@ -497,10 +523,6 @@ wake_expired_sleepers(void) {
 }
 
 /* --- User process creation (Round 6-3) --- */
-
-/* Defined in trap.c */
-void user_trap(void);
-void user_trap_ret(void);
 
 /*
  * user_proc_start — First-time entry stub for user processes.
@@ -513,7 +535,7 @@ void user_trap_ret(void);
  *
  * context.ra = user_proc_start for new user processes.
  */
-static void
+void
 user_proc_start(void) {
     spin_unlock(&this_proc()->lock);
     user_trap_ret();
@@ -522,33 +544,124 @@ user_proc_start(void) {
 /*
  * proc_create_user — allocate a user process with an empty address space.
  *
- * Allocates proc struct, kernel stack, trapframe, and page table.
- * Returns the process ready for the caller to fill in (exec or fork).
+ * Allocates the proc struct, kernel stack (in proc_create), trapframe, and
+ * a user page table (trampoline + trapframe mapped; no user pages yet).
+ * The caller (fork or exec) then fills in the address space and registers.
+ *
+ * Sets context.ra = user_proc_start so the first time the scheduler swtches
+ * to this process it releases p->lock and drops to user mode (rather than
+ * "returning" into a kernel thread function as kernel threads do).
+ *
+ * Returns NULL on allocation failure (caller must handle it).
  *
  * See Lecture 6-3, Part 9.
  */
 struct proc *
 proc_create_user(void) {
     struct proc *p = proc_create(NULL, "");
-    // vmalist
+    if (!p)
+        return NULL;
     p->trapframe = kalloc();
-    proc_pagetable(p);
+    if (!p->trapframe) {
+        list_del(&p->sibling); /* undo proc_create's link to init_proc */
+        kfree((void *)p->kstack);
+        kmfree(p);
+        return NULL;
+    }
+    memset(p->trapframe, 0, PG_SIZE);
+    p->pagetable = proc_pagetable(p); /* maps trampoline + trapframe */
+    if (!p->pagetable) {
+        list_del(&p->sibling);
+        kfree(p->trapframe);
+        kfree((void *)p->kstack);
+        kmfree(p);
+        return NULL;
+    }
     p->context.ra = (uint64)user_proc_start;
     return p;
 }
 
 /*
- * proc_fork — create a child process as a copy of the current process.
+ * proc_fork — create a child that is a copy of the calling process.
  *
- * Returns child PID to parent, sets child's trapframe->a0 = 0.
- * Returns -1 on failure.
+ * Deep-copies the parent's address space (every VMA and its pages) and
+ * its user register state, so the child resumes at the same instruction
+ * (just after the fork ecall) with an identical view of memory — but as
+ * an independent process with its own page table and kernel stack.
+ *
+ * The one observable difference is the return value, the classic fork
+ * contract: the parent gets the child's PID (this function's return,
+ * written to the parent's a0 by the syscall dispatcher); the child gets 0
+ * (written directly into the child's trapframe->a0 below).
+ *
+ * Returns child PID on success, -1 on failure (no child created).
  *
  * See Lecture 6-3, Part 3.
  */
 int
 proc_fork(void) {
-    /* TODO(student): call proc_create_user, vma_dup_all, copy trapframe,
-     * set child->trapframe->a0 = 0, set parent/child links,
-     * mark RUNNABLE, add to scheduler. Return child pid. */
-    return -1;
+    struct proc *parent = this_proc();
+
+    /* Allocate the child shell: proc struct, kstack, trapframe, and a fresh
+     * page table (with trampoline + trapframe mapped, but no user pages). */
+    struct proc *child = proc_create_user();
+    if (!child)
+        return -1;
+
+    /* Deep-copy the parent's user address space into the child. */
+    if (vma_dup_all(child, parent) < 0) {
+        /* Tear down the half-built child. proc_create linked its sibling
+         * onto init_proc->children, so unlink before freeing. */
+        list_del(&child->sibling);
+        proc_free_pagetable(child->pagetable);
+        kfree(child->trapframe);
+        kfree((void *)child->kstack);
+        kmfree(child);
+        return -1;
+    }
+
+    /* Copy the parent's saved user registers (epc, sp, all GPRs) so the
+     * child resumes exactly where the parent was in user mode. */
+    memcpy(child->trapframe, parent->trapframe, sizeof(struct trapframe));
+    child->trapframe->a0 = 0; /* fork() returns 0 in the child */
+
+    /* Overwrite the kernel-bootstrap fields with the CHILD's own values —
+     * copying the parent's would point the child at the parent's kstack. */
+    child->trapframe->kernel_sp = child->kstack + PG_SIZE;
+    child->trapframe->kernel_satp = csrr(satp);
+    child->trapframe->user_trap = (uint64)user_trap;
+    child->trapframe->hartid = 0;
+
+    memcpy(child->name, parent->name, sizeof(child->name));
+
+    /* Reparent: proc_create defaulted the child under init; move it under
+     * the real parent. Under wait_lock to serialize with exit/wait. */
+    unsigned long irq;
+    spin_lock_irqsave(&wait_lock, &irq);
+    list_del(&child->sibling);
+    child->parent = parent;
+    list_add_tail(&child->sibling, &parent->children);
+    spin_unlock_irqrestore(&wait_lock, irq);
+
+    /* Publish the child: make it schedulable and globally visible.
+     *
+     * Interrupts must be OFF here. sys_fork runs with interrupts ON (the
+     * syscall path calls intr_on), and run_queue_add takes run_queue_lock
+     * with a plain spin_lock. If a timer fired while we held that lock, its
+     * handler (wake_expired_sleepers -> run_queue_add) would spin on the
+     * same lock forever — single-hart self-deadlock. Disabling interrupts
+     * across the publish block closes that window. (all_procs and pid_table
+     * have no dedicated lock yet; they are only touched from syscall context
+     * today, but keeping them inside the irq-off region is also correct and
+     * is where a Phase 9 lock would go.) */
+    unsigned long pirq = intr_get();
+    intr_off();
+    child->state = PROC_RUNNABLE;
+    list_add_tail(&child->all_list, &all_procs);
+    run_queue_add(child);
+    hash_add(pid_table, &child->pid_link, PID_HASH_BITS, hash_int(child->pid));
+    if (pirq)
+        intr_on();
+
+    return child->pid; /* parent's a0 (the child's PID) */
 }

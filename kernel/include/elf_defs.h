@@ -39,32 +39,37 @@
 #define PF_W 0x2
 #define PF_R 0x4
 
+/* ELF64 file header — sits at offset 0 of the image. exec reads e_entry
+ * (start PC), e_phoff/e_phnum (where the program headers are), and validates
+ * e_ident[]/e_machine. The section-header fields (e_sh*) are unused. */
 struct elf_header {
-    uint8 e_ident[16];
-    uint16 e_type;
-    uint16 e_machine;
+    uint8 e_ident[16]; /* magic + class/data/version; exec checks these */
+    uint16 e_type;     /* ET_EXEC for a normal executable */
+    uint16 e_machine;  /* EM_RISCV — reject binaries built for other CPUs */
     uint32 e_version;
-    uint64 e_entry;
-    uint64 e_phoff;
-    uint64 e_shoff;
+    uint64 e_entry; /* virtual address of _start (-> trapframe->epc) */
+    uint64 e_phoff; /* byte offset of the program-header table */
+    uint64 e_shoff; /* section headers (unused) */
     uint32 e_flags;
     uint16 e_ehsize;
-    uint16 e_phentsize;
-    uint16 e_phnum;
+    uint16 e_phentsize; /* size of one program header */
+    uint16 e_phnum;     /* number of program headers */
     uint16 e_shentsize;
     uint16 e_shnum;
     uint16 e_shstrndx;
 };
 
-/* ELF64 program header (note: flags is before offset in 64-bit format) */
+/* ELF64 program header — one per segment. exec loads only PT_LOAD segments.
+ * (Note: in ELF64 p_flags comes right after p_type, unlike ELF32 where flags
+ * are last — a classic gotcha when porting 32-bit ELF code.) */
 struct elf_phdr {
-    uint32 p_type;
-    uint32 p_flags;
-    uint64 p_offset;
-    uint64 p_vaddr;
-    uint64 p_paddr;
-    uint64 p_filesz;
-    uint64 p_memsz;
+    uint32 p_type;   /* PT_LOAD = a segment to map into memory */
+    uint32 p_flags;  /* PF_R/PF_W/PF_X -> PTE permission bits */
+    uint64 p_offset; /* byte offset of segment data within the file */
+    uint64 p_vaddr;  /* virtual address to load the segment at */
+    uint64 p_paddr;  /* physical address (ignored for user programs) */
+    uint64 p_filesz; /* bytes present in the file (copy these) */
+    uint64 p_memsz;  /* bytes in memory; (memsz - filesz) is zeroed .bss */
     uint64 p_align;
 };
 
