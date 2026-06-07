@@ -1,3 +1,7 @@
+/*
+ * string.c — Freestanding C string/memory utilities.
+ * Minimal implementations for kernel use (no libc dependency).
+ */
 #include "types.h"
 
 void *

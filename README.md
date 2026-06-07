@@ -132,11 +132,14 @@ Rust's safety guarantees get more valuable as you move up from hardware. Closer 
 - Implement trampoline page and trapframe for user↔kernel transitions
 - Transition processes from S-mode to U-mode via `sret`
 - Implement the `ecall` syscall mechanism (trap into kernel, dispatch by syscall number, return)
-- Implement core syscalls: `write()`, `exit()`, `fork()`, `exec()`, `wait()`, `sbrk()`
-- Write a simple ELF loader for `exec()`
-- Implement copy-on-write fork and lazy allocation (page faults as a feature)
+- Implement core syscalls: `write()`, `exit()`, `fork()`, `exec()`, `wait()`, `getpid()`, `kill()`, `sleep()`
+- Virtual Memory Areas (VMAs) — per-process sorted list replacing the flat `sz` field
+- ELF loader for `exec()` — parse program headers, map PT_LOAD segments, push argv
+- Reference-counted pages (`page_get`/`page_put`) preparing for COW
+- Timer-based sleep with precise hardware arming (sorted sleep list + min-deadline)
+- Implement `sbrk()`, copy-on-write fork, and lazy allocation via page faults (Round 6-4)
 
-> **Milestone:** user-mode programs making system calls to the kernel; fork+exec works.
+> **Milestone:** user-mode init forks, execs hello, hello prints + sleeps + prints + exits. Full process tree.
 
 ### Phase 7 — File System
 
@@ -238,20 +241,37 @@ bobchouOS/
 │   ├── 1-1-boot-and-linker/
 │   ├── ...                 #   (one directory per round)
 │
+├── include/                # Shared ABI headers (kernel ↔ user)
+│   ├── syscall_num.h       #   Syscall numbers (user/kernel contract)
+│   └── errno.h             #   Error codes
+│
 ├── kernel/                 # Kernel source
 │   ├── arch/               #   RISC-V assembly: entry, traps, context switch, SBI
+│   │                       #   + embedded user binaries (user_bin_*.S)
 │   ├── include/            #   All kernel headers
 │   ├── drivers/            #   UART (future: virtio-blk, PLIC)
 │   ├── lib/                #   kprintf, string utilities
 │   ├── test/               #   Unit tests (run via `make test`)
 │   ├── main.c              #   Kernel entry point
 │   ├── proc.c              #   Process management, scheduler, lifecycle
+│   ├── exec.c              #   ELF loader, proc_exec
+│   ├── vma.c               #   Virtual Memory Area operations
+│   ├── syscall.c           #   System call dispatch + handlers
 │   ├── spinlock.c          #   Spinlock (amoswap + irqsave)
 │   ├── wait_queue.c        #   Wait queues (targeted sleep/wakeup)
-│   ├── trap.c              #   Trap dispatcher, kernel_trap_ret
-│   ├── vm.c                #   Virtual memory
-│   ├── kalloc.c            #   Physical page allocator
-│   └── kmalloc.c           #   Kernel heap allocator
+│   ├── trap.c              #   Trap dispatcher, user/kernel trap paths
+│   ├── vm.c                #   Page tables, copyin/copyout, page refcount
+│   ├── kalloc.c            #   Physical page allocator (buddy)
+│   └── kmalloc.c           #   Kernel heap allocator (slab)
+│
+├── user/                   # User-space programs
+│   ├── init.c              #   PID 1: fork + exec + wait loop
+│   ├── hello.c             #   Test program: write + sleep + write + exit
+│   ├── start.S             #   _start: call main, then exit
+│   ├── usys.S              #   Syscall stubs (li a7, ecall, ret)
+│   ├── user.h              #   Syscall prototypes for user programs
+│   └── user.ld             #   User linker script (text at 0x1000)
+│
 ├── docs/                   # Reference specs (xv6 book, RISC-V privileged spec)
 ├── Makefile                # Build system
 ├── linker.ld               # Kernel linker script
@@ -259,7 +279,7 @@ bobchouOS/
 └── README.md
 ```
 
-Each lecture directory contains a `lecture.md` writeup and self-contained exercises with their own `Makefile`, `entry.S`, `linker.ld`, and solution files. The `kernel/` directory is the actual OS — built incrementally across phases.
+Each lecture directory contains a `lecture.md` writeup and self-contained exercises. The `kernel/` directory is the actual OS — built incrementally across phases. The `user/` directory holds user-space programs compiled as ELF and embedded into the kernel (until Phase 7 adds a filesystem).
 
 ## License
 

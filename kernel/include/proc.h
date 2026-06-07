@@ -1,7 +1,8 @@
 /*
  * proc.h — Process management structures and declarations.
  *
- * See Lectures 5-1 and 5-2 for design rationale.
+ * See Lectures 5-1/5-2 for scheduling and context switch design,
+ * and Lecture 6-3 for fork/exec/wait/kill/sleep and VMA integration.
  */
 
 #ifndef PROC_H
@@ -111,7 +112,7 @@ struct cpu {
 void proc_init(void);
 void proc_bootstrap(void);
 struct proc *proc_create_kernel(void (*fn)(void), const char *name);
-struct proc *proc_create_user(void);
+struct proc *proc_create_user(void); /* allocate proc + pagetable + trapframe (no VMAs yet) */
 int proc_fork(void);
 int proc_exec(const char *path, char **argv);
 void wake_expired_sleepers(void);

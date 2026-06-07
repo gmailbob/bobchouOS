@@ -113,10 +113,10 @@ kvm_map(uint64 va, uint64 pa, uint64 size, int perm) {
  * Called once from kmain() after kalloc_init().
  * Must:
  *   1. Allocate and zero a root page table page (kalloc).
- *   2. Identity-map PLIC:  PLIC_BASE, PLIC_SIZE, RW
- *   3. Identity-map UART:  UART0_BASE, PG_SIZE, RW
- *   4. Identity-map kernel text: _kernel_start to _text_end, R-X
- *   5. Identity-map kernel data through DRAM end: _text_end to PHYS_STOP, RW
+ *   2. Identity-map MMIO: QEMU_SHUTDOWN, CLINT, PLIC, UART (RW)
+ *   3. Identity-map kernel text: _kernel_start to _text_end, R-X
+ *   4. Identity-map kernel data through DRAM end: _text_end to PHYS_STOP, RW
+ *   5. Map trampoline at TRAMPOLINE VA (non-identity, R-X)
  *   6. Print diagnostic.
  */
 void
@@ -318,11 +318,11 @@ page_get(void *pa) {
 }
 
 /*
- * page_put — decrement reference count, free page when it reaches one.
+ * page_put — release one reference; free the page if this is the last.
  *
- * When refcount drops to 1, the last user is releasing: call kfree
+ * If refcount is already 1, the last user is releasing: call kfree
  * which asserts refcount == 1 and sets it to 0 (its normal contract).
- * When refcount is still > 1 after decrement, the page is still shared.
+ * If refcount > 1, simply decrement — the page is still shared.
  *
  * See Lecture 6-3, Part 2.
  */

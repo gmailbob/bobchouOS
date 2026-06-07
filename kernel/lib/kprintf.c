@@ -1,7 +1,8 @@
 /*
  * kprintf.c — Formatted output for the kernel.
  *
- * Phase 1: no locking (single hart). We will add a spinlock in Phase 2.
+ * Currently lock-free (single hart). If multi-hart support is added, protect
+ * uart_putc calls with a spinlock.
  * See Lecture 1-3 for the format string parsing and integer conversion.
  */
 
