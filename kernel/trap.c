@@ -15,6 +15,7 @@
 #include "mem_layout.h"
 #include "proc.h"
 #include "trapframe.h"
+#include "vm.h"
 
 /* ---- Exception name table ----
  *
@@ -176,6 +177,7 @@ user_trap(void) {
     csrw(stvec, (uint64)kernel_vec);
 
     uint64 scause_val = csrr(scause);
+    uint64 stval_val = csrr(stval);
     uint64 sstatus_val = csrr(sstatus);
     uint64 code = scause_val & 0xff;
 
@@ -209,9 +211,14 @@ user_trap(void) {
             intr_on();
             p->trapframe->a0 = syscall();
             break;
+        case EXC_LOAD_PAGE:
+        case EXC_STORE_PAGE:
+            if (handle_page_fault(p, code, stval_val) < 0)
+                p->killed = 1;
+            break;
         default:
             kprintf("user_trap: exception pid=%d scause=%p sepc=%p stval=%p\n", p->pid,
-                    (void *)scause_val, (void *)p->trapframe->epc, (void *)csrr(stval));
+                    (void *)scause_val, (void *)p->trapframe->epc, (void *)stval_val);
             p->killed = 1;
             break;
         }

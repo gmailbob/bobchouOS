@@ -36,13 +36,14 @@
  * Returns NULL on allocation failure.
  */
 struct vma *
-vma_create(uint64 start, uint64 end, int perm) {
+vma_create(uint64 start, uint64 end, int perm, uint32 flags) {
     struct vma *v = kmalloc(sizeof(struct vma));
     if (!v)
         return NULL;
     v->start = start;
     v->end = end;
     v->perm = perm;
+    v->flags = flags;
     INIT_LIST_HEAD(&v->link);
     return v;
 }
@@ -88,46 +89,61 @@ vma_find(struct proc *p, uint64 addr) {
 }
 
 /*
- * vma_dup_all — deep-copy every VMA (and its mapped pages) from src to dst.
+ * vma_find_by_flags — return the first VMA with matching flags, or NULL.
+ */
+struct vma *
+vma_find_by_flags(struct proc *p, uint32 flags) {
+    struct vma *pos;
+    list_for_each_entry(pos, &p->vma_list, link) {
+        if (pos->flags & flags)
+            return pos;
+    }
+    return NULL;
+}
+
+/*
+ * vma_dup_all — COW-duplicate the address space from src to dst.
  *
  * Used by fork. For each VMA in src: create a matching VMA in dst, then
- * for each mapped page in the region allocate a fresh page, copy the bytes,
- * and map it into dst's page table with the same permissions.
+ * share physical pages via copy-on-write (no allocation, no memcpy).
+ *
+ * COW protocol per page:
+ *   - Skip pages with no valid PTE (lazy — not yet faulted in)
+ *   - If writable: clear PTE_W, set PTE_COW in BOTH parent and child PTEs
+ *   - Map same physical page in dst with the (possibly downgraded) flags
+ *   - page_get to increment refcount (1 → 2)
+ *   - After all pages: sfence_vma to flush parent's stale TLB entries
  *
  * Returns 0 on success, -1 on failure. On failure dst is left clean —
  * vma_free_all(dst) reclaims everything mapped so far.
  *
- * Note: only user VMAs are copied. The trampoline and trapframe are kernel-
- * managed mappings installed by proc_pagetable, not VMAs, so they are never
- * duplicated here.
+ * Note: only user VMAs are duplicated. The trampoline and trapframe are
+ * kernel-managed mappings installed by proc_pagetable, not VMAs.
  */
 int
 vma_dup_all(struct proc *dst, struct proc *src) {
     struct vma *pos;
     list_for_each_entry(pos, &src->vma_list, link) {
-        struct vma *nv = vma_create(pos->start, pos->end, pos->perm);
+        struct vma *nv = vma_create(pos->start, pos->end, pos->perm, pos->flags);
         if (!nv)
             goto fail;
-        /* Add to dst's list BEFORE mapping pages, so that if a later page
-         * allocation fails, the fail path's vma_free_all walks this region
-         * and frees the pages we already mapped (no leak). */
         vma_add(dst, nv);
 
         for (uint64 va = pos->start; va < pos->end; va += PG_SIZE) {
             pte_t *pte = walk(src->pagetable, va, 0);
-            /* Skip holes in the region (e.g. a guard page with no mapping). */
             if (!pte || !(*pte & PTE_V))
-                continue;
-            void *pg = kalloc();
-            if (!pg)
+                continue; /* lazy page — not faulted in yet, skip */
+
+            uint64 pa = pte_to_pa(*pte);
+            if (*pte & PTE_W)
+                *pte = (*pte & ~PTE_W) | PTE_COW;
+            if (map_pages(dst->pagetable, va, PG_SIZE, pa, (int)pte_flags(*pte)) < 0)
                 goto fail;
-            memcpy(pg, (void *)pte_to_pa(*pte), PG_SIZE);
-            if (map_pages(dst->pagetable, va, PG_SIZE, (uint64)pg, pos->perm) < 0) {
-                kfree(pg); /* not yet mapped, so vma_free_all won't see it */
-                goto fail;
-            }
+            page_get((void *)pa);
         }
     }
+
+    sfence_vma();
     return 0;
 
 fail:

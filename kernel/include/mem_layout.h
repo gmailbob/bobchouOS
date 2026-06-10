@@ -25,11 +25,25 @@
 #define QEMU_SHUTDOWN_PASS (_UL(0x5555))          /* exit QEMU with success */
 #define QEMU_SHUTDOWN_FAIL (_UL(0x3333))          /* exit QEMU with failure */
 
-/* User-mode virtual address space layout (Sv39: 2^39 = 512 GB) */
-#define TRAMPOLINE       (MAX_VA - PG_SIZE)       /* trampoline page (same VA in both PTs) */
-#define TRAPFRAME        (TRAMPOLINE - PG_SIZE)   /* per-process trapframe (user PT only) */
-#define USER_STACK_TOP   (TRAPFRAME - PG_SIZE)    /* guard page between trapframe and stack */
-#define USER_TEXT_START  (_UL(0x1000))            /* user code starts here (page 0 unmapped) */
+/*
+ * User-mode virtual address space layout (Sv39, high → low):
+ *   TRAMPOLINE      — shared kernel/user page (uservec/userret)
+ *   TRAPFRAME       — per-process saved registers
+ *   (guard page)    — unmapped, separates trapframe from stack
+ *   USER_STACK_TOP  — top of stack region
+ *   USER_STACK_BOT  — bottom of stack region (elastic, up to 16 pages)
+ *   (guard page)    — unmapped, separates stack from heap
+ *   HEAP_MAX        — highest address sbrk can reach
+ *       ...         — heap grows upward from end of PT_LOAD segments
+ *   USER_TEXT_START  — first mapped page (page 0 intentionally unmapped)
+ */
+#define TRAMPOLINE       (MAX_VA - PG_SIZE)
+#define TRAPFRAME        (TRAMPOLINE - PG_SIZE)
+#define USER_STACK_TOP   (TRAPFRAME - PG_SIZE)
+#define STACK_MAX_PAGES  16
+#define USER_STACK_BOT   (USER_STACK_TOP - STACK_MAX_PAGES * PG_SIZE)
+#define HEAP_MAX         (USER_STACK_BOT - PG_SIZE)
+#define USER_TEXT_START  (_UL(0x1000))
 // clang-format on
 
 #endif /* MEM_LAYOUT_H */

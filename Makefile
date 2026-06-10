@@ -32,11 +32,12 @@ OBJS    = kernel/arch/entry.o \
           kernel/arch/sbi.o \
           kernel/arch/trampoline.o \
           kernel/arch/user_bin_init.o \
-          kernel/arch/user_bin_hello.o \
+          kernel/arch/user_bin_utest.o \
           kernel/main.o \
           kernel/trap.o \
           kernel/kalloc.o \
           kernel/vm.o \
+          kernel/vm_fault.o \
           kernel/kmalloc.o \
           kernel/proc.o \
           kernel/vma.o \
@@ -65,7 +66,7 @@ TEST_OBJS = kernel/test/run_tests.o \
 QEMU    = qemu-system-riscv64
 QFLAGS  = -machine virt -nographic -bios none -kernel $(TARGET)
 
-USER_PROGS = user/init.elf user/hello.elf
+USER_PROGS = user/init.elf user/utest.elf
 
 # ---------- User program build ----------
 
@@ -73,17 +74,16 @@ USER_CFLAGS = -march=rv64imac_zicsr -mabi=lp64 \
               -ffreestanding -nostdlib -mcmodel=medany \
               -Wall -O2 -g -I include -I user
 
-# Round 6-3 user programs (full ELF, embedded directly)
 user/init.elf: user/init.c user/start.S user/usys.S user/user.ld user/user.h include/syscall_num.h
 	$(CC) $(USER_CFLAGS) -nostdlib -T user/user.ld -o $@ user/start.S user/usys.S user/init.c
 
-user/hello.elf: user/hello.c user/start.S user/usys.S user/user.ld user/user.h include/syscall_num.h
-	$(CC) $(USER_CFLAGS) -nostdlib -T user/user.ld -o $@ user/start.S user/usys.S user/hello.c
+user/utest.elf: user/utest.c user/start.S user/usys.S user/user.ld user/user.h include/syscall_num.h
+	$(CC) $(USER_CFLAGS) -nostdlib -T user/user.ld -o $@ user/start.S user/usys.S user/utest.c
 
 kernel/arch/user_bin_init.o: kernel/arch/user_bin_init.S user/init.elf
 	$(AS) $(ASFLAGS) -c -o $@ $<
 
-kernel/arch/user_bin_hello.o: kernel/arch/user_bin_hello.S user/hello.elf
+kernel/arch/user_bin_utest.o: kernel/arch/user_bin_utest.S user/utest.elf
 	$(AS) $(ASFLAGS) -c -o $@ $<
 
 # ---------- Targets ----------

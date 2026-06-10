@@ -1,22 +1,19 @@
 /*
  * init.c — First user process (PID 1).
  *
- * Structure mirrors a real init:
- *   1. Spawn child programs (hello for now, shell in Phase 8)
- *   2. Reap orphaned zombies forever
+ * Spawns utest, then reaps children forever.
  *
- * See Lecture 6-3, Part 9.
+ * See Lecture 6-3/6-4.
  */
 
 #include "user.h"
 
 int
 main(void) {
-    /* Spawn hello as a one-time test — pass a name via argv */
     int pid = fork();
     if (pid == 0) {
-        char *argv[] = {"...", "bobchouOS", 0};
-        exec("hello", argv);
+        char *argv[] = {"utest", 0};
+        exec("utest", argv);
         exit(1);
     }
 

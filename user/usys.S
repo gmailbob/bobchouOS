@@ -56,3 +56,9 @@ sleep:
     li a7, SYS_sleep
     ecall
     ret
+
+.globl sbrk
+sbrk:
+    li a7, SYS_sbrk
+    ecall
+    ret

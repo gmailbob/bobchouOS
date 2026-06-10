@@ -630,7 +630,7 @@ proc_fork(void) {
     if (!child)
         return -1;
 
-    /* Deep-copy the parent's user address space into the child. */
+    /* COW fork: see vma_dup_all in vma.c for the TODO. */
     if (vma_dup_all(child, parent) < 0) {
         /* Tear down the half-built child. proc_create linked its sibling
          * onto init_proc->children, so unlink before freeing. */
@@ -686,4 +686,55 @@ proc_fork(void) {
         intr_on();
 
     return child->pid; /* parent's a0 (the child's PID) */
+}
+
+/*
+ * proc_sbrk — grow or shrink the heap by n bytes.
+ *
+ * Returns the OLD break address on success, -1 on failure.
+ * The break is always page-aligned.
+ *
+ * See Lecture 6-4, Part 2.
+ */
+int64
+proc_sbrk(int64 n) {
+    struct proc *p = this_proc();
+
+    struct vma *v = vma_find_by_flags(p, VMA_HEAP);
+    if (!v)
+        return -1;
+
+    uint64 old_end = v->end;
+
+    if (n > 0) {
+        /* Grow: extend VMA, don't allocate pages (demand paging handles it).
+         * Page-aligned: sbrk(1) rounds up to a full page. Callers (malloc)
+         * handle sub-page granularity internally. */
+        uint64 new_end = PG_ROUND_UP(old_end + n);
+        if (new_end > HEAP_MAX)
+            return -1;
+        v->end = new_end;
+    } else if (n < 0) {
+        /* Shrink: round down, unmap released pages, free backing memory.
+         * Page-aligned: sbrk(-1) reclaims the entire last page. This is
+         * correct — the break is page-granular, and user-space malloc never
+         * shrinks by sub-page amounts. */
+        uint64 new_end = PG_ROUND_DOWN(old_end + n);
+        if (new_end < v->start)
+            return -1;
+
+        for (uint64 va = new_end; va < old_end; va += PG_SIZE) {
+            pte_t *pte = walk(p->pagetable, va, 0);
+            /* Skip lazy pages that were never faulted in (no PTE to free) */
+            if (!pte || !(*pte & PTE_V))
+                continue;
+            page_put((void *)pte_to_pa(*pte));
+            *pte = 0;
+        }
+        sfence_vma();
+        v->end = new_end;
+    }
+    /* n == 0: query — just return current break */
+
+    return old_end;
 }

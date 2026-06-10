@@ -114,6 +114,7 @@ void proc_bootstrap(void);
 struct proc *proc_create_kernel(void (*fn)(void), const char *name);
 struct proc *proc_create_user(void); /* allocate proc + pagetable + trapframe (no VMAs yet) */
 int proc_fork(void);
+int64 proc_sbrk(int64 n);
 int proc_exec(const char *path, char **argv);
 void wake_expired_sleepers(void);
 void scheduler(void);

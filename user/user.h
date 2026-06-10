@@ -16,5 +16,6 @@ int wait(int *status);
 int getpid(void);
 int kill(int pid);
 int sleep(int ms);
+void *sbrk(long n);
 
 #endif /* USER_H */

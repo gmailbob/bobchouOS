@@ -46,7 +46,7 @@ extern void user_trap(void);
 /* --- Embedded binary table --- */
 
 extern char _binary_init_start[], _binary_init_end[];
-extern char _binary_hello_start[], _binary_hello_end[];
+extern char _binary_utest_start[], _binary_utest_end[];
 
 struct embedded_binary {
     const char *name;
@@ -56,7 +56,7 @@ struct embedded_binary {
 
 static struct embedded_binary binaries[] = {
     {"init", (uint8 *)_binary_init_start, (uint8 *)_binary_init_end},
-    {"hello", (uint8 *)_binary_hello_start, (uint8 *)_binary_hello_end},
+    {"utest", (uint8 *)_binary_utest_start, (uint8 *)_binary_utest_end},
 };
 
 #define NBINARIES (sizeof(binaries) / sizeof(binaries[0]))
@@ -149,6 +149,7 @@ proc_exec(const char *path, char **argv) {
     if (!new_pt)
         return -ENOMEM;
     LIST_HEAD(new_vma_list);
+    uint64 heap_start = 0;
 
     /* Load PT_LOAD segments */
     struct elf_phdr *phdrs = (struct elf_phdr *)((uint8 *)elf + elf->e_phoff);
@@ -180,22 +181,33 @@ proc_exec(const char *path, char **argv) {
             }
         }
 
-        struct vma *v = vma_create(start, end, perm);
+        struct vma *v = vma_create(start, end, perm, 0);
         if (!v)
             goto fail;
         list_add_tail(&v->link, &new_vma_list);
+
+        /* Track highest loaded address for heap placement */
+        if (end > heap_start)
+            heap_start = end;
     }
 
-    /* Allocate user stack */
+    /* Create zero-length heap VMA immediately above last PT_LOAD segment */
+    struct vma *heap_vma = vma_create(heap_start, heap_start, PTE_R | PTE_W | PTE_U, VMA_HEAP);
+    if (!heap_vma)
+        goto fail;
+    list_add_tail(&heap_vma->link, &new_vma_list);
+
+    /* Allocate elastic stack: VMA spans STACK_MAX_PAGES, only top page mapped */
+    uint64 stack_page_bot = USER_STACK_TOP - PG_SIZE;
     uint8 *stack = kalloc();
     if (!stack)
         goto fail;
-    uint64 ustack_bot = USER_STACK_TOP - PG_SIZE;
-    if (map_pages(new_pt, ustack_bot, PG_SIZE, (uint64)stack, PTE_R | PTE_W | PTE_U) < 0) {
+    if (map_pages(new_pt, stack_page_bot, PG_SIZE, (uint64)stack, PTE_R | PTE_W | PTE_U) < 0) {
         kfree(stack);
         goto fail;
     }
-    struct vma *stack_vma = vma_create(ustack_bot, USER_STACK_TOP, PTE_R | PTE_W | PTE_U);
+    struct vma *stack_vma =
+        vma_create(USER_STACK_BOT, USER_STACK_TOP, PTE_R | PTE_W | PTE_U, VMA_STACK);
     if (!stack_vma)
         goto fail;
     list_add_tail(&stack_vma->link, &new_vma_list);
@@ -208,9 +220,9 @@ proc_exec(const char *path, char **argv) {
      * a0=argc, a1=&argv[0] are set in the trapframe below so _start sees them.
      *
      * The stack is one page. Every decrement of sp is bounds-checked against
-     * ustack_bot: an oversized argv must fail cleanly (-E2BIG), never write
-     * past the page (which, with unsigned sp - ustack_bot, would wrap to a
-     * wild kernel address). uargv[] is capped at MAXARG. */
+     * stack_page_bot: an oversized argv must fail cleanly (-E2BIG), never
+     * write past the page (which, with unsigned sp - stack_page_bot, would
+     * wrap to a wild kernel address). uargv[] is capped at MAXARG. */
     uint64 sp = USER_STACK_TOP;
     uint64 uargv[MAXARG];
     int argc = 0;
@@ -220,9 +232,9 @@ proc_exec(const char *path, char **argv) {
             goto fail;
         uint64 len = strlen(argv[argc]) + 1; /* include the '\0' */
         sp -= len;
-        if (sp < ustack_bot) /* string would overflow the stack page */
+        if (sp < stack_page_bot) /* string would overflow the stack page */
             goto fail;
-        memcpy(stack + (sp - ustack_bot), argv[argc], len);
+        memcpy(stack + (sp - stack_page_bot), argv[argc], len);
         uargv[argc] = sp; /* remember the user VA where this string landed */
     }
 
@@ -230,11 +242,11 @@ proc_exec(const char *path, char **argv) {
 
     /* Reserve argc pointers + a NULL terminator. */
     sp -= (uint64)(argc + 1) * 8;
-    if (sp < ustack_bot)
+    if (sp < stack_page_bot)
         goto fail;
     for (int i = 0; i < argc; i++)
-        *(uint64 *)(stack + (sp + i * 8 - ustack_bot)) = uargv[i];
-    *(uint64 *)(stack + (sp + (uint64)argc * 8 - ustack_bot)) = 0; /* argv[argc] = NULL */
+        *(uint64 *)(stack + (sp + i * 8 - stack_page_bot)) = uargv[i];
+    *(uint64 *)(stack + (sp + (uint64)argc * 8 - stack_page_bot)) = 0; /* argv[argc] = NULL */
 
     /* === Success: swap old address space for new === */
     vma_free_all(p); /* free old user pages */

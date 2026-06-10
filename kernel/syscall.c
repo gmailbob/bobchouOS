@@ -215,6 +215,19 @@ sys_sleep(void) {
     return 0;
 }
 
+/*
+ * sys_sbrk — grow or shrink the process heap.
+ *
+ * Args (from trapframe):
+ *   a0 = n (signed: positive = grow, negative = shrink, 0 = query)
+ *
+ * Returns old break address on success, -1 on failure.
+ */
+static int64
+sys_sbrk(void) {
+    return proc_sbrk((int64)this_proc()->trapframe->a0);
+}
+
 /* --- Dispatch table --- */
 // clang-format off
 static int64 (*syscalls[])(void) = {
@@ -227,6 +240,7 @@ static int64 (*syscalls[])(void) = {
     [SYS_getpid] = sys_getpid,
     [SYS_kill]   = sys_kill,
     [SYS_sleep]  = sys_sleep,
+    [SYS_sbrk]   = sys_sbrk,
 };
 // clang-format on
 

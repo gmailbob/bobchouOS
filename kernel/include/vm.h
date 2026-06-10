@@ -17,14 +17,15 @@
 typedef uint64 pte_t;
 
 /* ---- PTE flag bits (bits 9:0) ---- */
-#define PTE_V (1UL << 0) /* Valid */
-#define PTE_R (1UL << 1) /* Readable */
-#define PTE_W (1UL << 2) /* Writable */
-#define PTE_X (1UL << 3) /* Executable */
-#define PTE_U (1UL << 4) /* User-accessible */
-#define PTE_G (1UL << 5) /* Global mapping */
-#define PTE_A (1UL << 6) /* Accessed */
-#define PTE_D (1UL << 7) /* Dirty */
+#define PTE_V (1UL << 0)   /* Valid */
+#define PTE_R (1UL << 1)   /* Readable */
+#define PTE_W (1UL << 2)   /* Writable */
+#define PTE_X (1UL << 3)   /* Executable */
+#define PTE_U (1UL << 4)   /* User-accessible */
+#define PTE_G (1UL << 5)   /* Global mapping */
+#define PTE_A (1UL << 6)   /* Accessed */
+#define PTE_D (1UL << 7)   /* Dirty */
+#define PTE_COW (1UL << 8) /* Copy-on-write (software, RSW bit 0) */
 
 /*
  * PA <-> PTE conversion helpers.
@@ -95,5 +96,8 @@ void proc_free_pagetable(pte_t *pt);
 int copyin(pte_t *pagetable, void *dst, uint64 srcva, uint64 len);
 int copyout(pte_t *pagetable, uint64 dstva, void *src, uint64 len);
 int copyinstr(pte_t *pagetable, char *dst, uint64 srcva, uint64 max);
+
+/* Page fault handling (Round 6-4) */
+int handle_page_fault(struct proc *p, uint64 cause, uint64 va);
 
 #endif /* VM_H */

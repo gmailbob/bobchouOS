@@ -18,7 +18,7 @@ test_vma(void) {
     kprintf("[test_vma]\n");
 
     /* --- vma_create --- */
-    struct vma *v = vma_create(0x1000, 0x3000, PTE_R | PTE_X | PTE_U);
+    struct vma *v = vma_create(0x1000, 0x3000, PTE_R | PTE_X | PTE_U, 0);
     TEST_ASSERT(v != NULL, "vma_create: returns non-NULL");
     TEST_ASSERT(v->start == 0x1000, "vma_create: start = 0x1000");
     TEST_ASSERT(v->end == 0x3000, "vma_create: end = 0x3000");
@@ -31,9 +31,9 @@ test_vma(void) {
     memset(&fake, 0, sizeof(fake));
     INIT_LIST_HEAD(&fake.vma_list);
 
-    struct vma *v1 = vma_create(0x1000, 0x2000, PTE_R | PTE_U);
-    struct vma *v2 = vma_create(0x5000, 0x6000, PTE_R | PTE_W | PTE_U);
-    struct vma *v3 = vma_create(0x3000, 0x4000, PTE_R | PTE_U);
+    struct vma *v1 = vma_create(0x1000, 0x2000, PTE_R | PTE_U, 0);
+    struct vma *v2 = vma_create(0x5000, 0x6000, PTE_R | PTE_W | PTE_U, 0);
+    struct vma *v3 = vma_create(0x3000, 0x4000, PTE_R | PTE_U, 0);
 
     vma_add(&fake, v2); /* [0x5000] */
     vma_add(&fake, v1); /* [0x1000, 0x5000] — inserted before v2 */
@@ -81,7 +81,7 @@ test_vma(void) {
 
     void *pg = kalloc();
     map_pages(fake2.pagetable, 0x1000, PG_SIZE, (uint64)pg, PTE_R | PTE_U);
-    vma_add(&fake2, vma_create(0x1000, 0x2000, PTE_R | PTE_U));
+    vma_add(&fake2, vma_create(0x1000, 0x2000, PTE_R | PTE_U, 0));
 
     vma_free_all(&fake2);
 

@@ -225,7 +225,15 @@ copyin(pte_t *pagetable, void *dst, uint64 srcva, uint64 len) {
     while (len > 0) {
         uint64 va_page = PG_ROUND_DOWN(srcva);
         pte_t *pte = walk(pagetable, va_page, 0);
-        if (!pte || !(*pte & PTE_V) || !(*pte & PTE_U))
+
+        /* Pre-fault lazy pages before reading */
+        if (!pte || !(*pte & PTE_V)) {
+            if (handle_page_fault(this_proc(), EXC_LOAD_PAGE, va_page) < 0)
+                return -EFAULT;
+            pte = walk(pagetable, va_page, 0);
+        }
+
+        if (!(*pte & PTE_U))
             return -EFAULT;
         uint64 offset = srcva - va_page;
         uint64 pa = pte_to_pa(*pte) + offset;
@@ -254,7 +262,18 @@ copyout(pte_t *pagetable, uint64 dstva, void *src, uint64 len) {
     while (len > 0) {
         uint64 va_page = PG_ROUND_DOWN(dstva);
         pte_t *pte = walk(pagetable, va_page, 0);
-        if (!pte || !(*pte & PTE_V) || !(*pte & PTE_U) || !(*pte & PTE_W))
+
+        /* Pre-fault lazy and COW pages before the memcpy.
+         * Re-walk is needed for the lazy case; for COW the PTE slot is the
+         * same (cow_copy modifies *pte in place), so the re-walk is technically
+         * redundant but keeps the code unified. */
+        if (!pte || !(*pte & PTE_V) || (*pte & PTE_COW)) {
+            if (handle_page_fault(this_proc(), EXC_STORE_PAGE, va_page) < 0)
+                return -EFAULT;
+            pte = walk(pagetable, va_page, 0);
+        }
+
+        if (!(*pte & PTE_U) || !(*pte & PTE_W))
             return -EFAULT;
         uint64 offset = dstva - va_page;
         uint64 pa = pte_to_pa(*pte) + offset;
@@ -283,7 +302,15 @@ copyinstr(pte_t *pagetable, char *dst, uint64 srcva, uint64 max) {
     while (max > 0) {
         uint64 va_page = PG_ROUND_DOWN(srcva);
         pte_t *pte = walk(pagetable, va_page, 0);
-        if (!pte || !(*pte & PTE_V) || !(*pte & PTE_U))
+
+        /* Pre-fault lazy pages before reading, same as copyin */
+        if (!pte || !(*pte & PTE_V)) {
+            if (handle_page_fault(this_proc(), EXC_LOAD_PAGE, va_page) < 0)
+                return -EFAULT;
+            pte = walk(pagetable, va_page, 0);
+        }
+
+        if (!(*pte & PTE_U))
             return -EFAULT;
         uint64 offset = srcva - va_page;
         char *src = (char *)(pte_to_pa(*pte) + offset);

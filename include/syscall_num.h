@@ -19,8 +19,9 @@
 #define SYS_getpid  6    /* Linux RISC-V: 172 */
 #define SYS_kill    7    /* Linux RISC-V: 129 */
 #define SYS_sleep   8    /* Linux RISC-V: 101 (nanosleep) */
+#define SYS_sbrk    9    /* Linux RISC-V: 214 (brk) */
 
-#define NSYSCALL    9    /* one past the last valid syscall number */
+#define NSYSCALL    10   /* one past the last valid syscall number */
 // clang-format on
 
 #endif /* SYSCALL_NUM_H */
