@@ -92,20 +92,13 @@ test_lazy_alloc(void) {
 
 static void
 test_elastic_stack(void) {
-    /* Recurse deep enough to cross a page boundary.
-     * Each frame: ~256 bytes. 20 frames = ~5 KB > 1 page. */
-    volatile char buf[256];
-    buf[0] = 1;
-    /* Use a simple iterative approach to use stack space equivalent
-     * to recursion, avoiding optimizer eliminating tail calls. */
-    volatile int sum = 0;
-    for (int i = 0; i < 20; i++) {
-        volatile char frame[256];
-        frame[0] = (char)i;
-        sum += frame[0];
-    }
-    (void)sum;
-    (void)buf;
+    /* Touch memory beyond the first stack page to trigger demand paging.
+     * A single large local forces sp well below the initial mapped page. */
+    volatile char big[8192];
+    big[0] = 'S';
+    big[8191] = 'E';
+    if (big[0] != 'S' || big[8191] != 'E')
+        fail("elastic_stack");
     pass("elastic_stack");
 }
 

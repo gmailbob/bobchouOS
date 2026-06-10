@@ -213,6 +213,8 @@ user_trap(void) {
             break;
         case EXC_LOAD_PAGE:
         case EXC_STORE_PAGE:
+            /* EXC_INST_PAGE (12) intentionally omitted — text segments are
+             * eagerly mapped by exec, so a fetch fault is always a real bug. */
             if (handle_page_fault(p, code, stval_val) < 0)
                 p->killed = 1;
             break;

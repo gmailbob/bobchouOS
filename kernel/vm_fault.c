@@ -101,14 +101,11 @@ handle_page_fault(struct proc *p, uint64 cause, uint64 va) {
     if (!pte || !(*pte & PTE_V)) {
         if (cause == EXC_STORE_PAGE && !(v->perm & PTE_W))
             return -1;
-        lazy_alloc(p, va, v);
-        return 0;
+        return lazy_alloc(p, va, v);
     }
 
-    if (cause == EXC_STORE_PAGE && (*pte & PTE_COW)) {
-        cow_copy(pte);
-        return 0;
-    }
+    if (cause == EXC_STORE_PAGE && (*pte & PTE_COW))
+        return cow_copy(pte);
 
     return -1;
 }

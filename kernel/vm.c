@@ -217,6 +217,7 @@ proc_free_pagetable(pte_t *root) {
  * Walks the user page table to translate each page of srcva, then copies
  * via the kernel identity map. Validates PTE_V and PTE_U on each page.
  *
+ *
  * Returns 0 on success, -EFAULT on invalid user address.
  * See Lecture 6-2, Part 5.
  */
@@ -303,7 +304,7 @@ copyinstr(pte_t *pagetable, char *dst, uint64 srcva, uint64 max) {
         uint64 va_page = PG_ROUND_DOWN(srcva);
         pte_t *pte = walk(pagetable, va_page, 0);
 
-        /* Pre-fault lazy pages before reading, same as copyin */
+        /* Pre-fault lazy pages before reading */
         if (!pte || !(*pte & PTE_V)) {
             if (handle_page_fault(this_proc(), EXC_LOAD_PAGE, va_page) < 0)
                 return -EFAULT;

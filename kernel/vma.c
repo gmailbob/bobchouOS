@@ -15,12 +15,11 @@
  *   vma_dup_all  — deep-copy a process's whole address space (fork)
  *   vma_free_all — free a process's whole address space (exec/exit)
  *
- * Physical pages are reference-counted (page_get/page_put). In this round
- * fork deep-copies, so every page has refcount 1; page_put therefore frees
- * immediately. The refcount machinery is what a future copy-on-write fork
- * will build on.
+ * Physical pages are reference-counted (page_get/page_put). COW fork
+ * shares pages (refcount > 1); page_put frees only when the last
+ * reference is dropped.
  *
- * See Lecture 6-3, Parts 1 and 3.
+ * See Lectures 6-3 (Parts 1 and 3) and 6-4.
  */
 
 #include "vma.h"

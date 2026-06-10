@@ -719,9 +719,11 @@ proc_sbrk(int64 n) {
          * Page-aligned: sbrk(-1) reclaims the entire last page. This is
          * correct — the break is page-granular, and user-space malloc never
          * shrinks by sub-page amounts. */
+        if ((uint64)(-n) > (old_end - v->start))
+            return -1;
         uint64 new_end = PG_ROUND_DOWN(old_end + n);
         if (new_end < v->start)
-            return -1;
+            new_end = v->start;
 
         for (uint64 va = new_end; va < old_end; va += PG_SIZE) {
             pte_t *pte = walk(p->pagetable, va, 0);
