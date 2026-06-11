@@ -159,8 +159,9 @@ Rust's safety guarantees get more valuable as you move up from hardware. Closer 
 - Implement `pipe()` for inter-process communication
 - Write a minimal shell: read input, parse commands, fork + exec
 - Implement I/O redirection (`echo hello > file`) and pipes (`cmd1 | cmd2`)
+- Implement `mmap()` (anonymous + file-backed)
 - Write small userspace programs: `echo`, `cat`, `ls`, `wc`, `grep`
-- Implement a minimal libc (printf, malloc, string functions)
+- Implement a minimal libc (printf, malloc/free via mmap, string functions)
 
 > **Milestone:** boot bobchouOS, get a shell prompt, run commands. The "wow" moment.
 
@@ -180,7 +181,7 @@ Each is independent — pick any after Phase 9.
 | Topic | What it teaches |
 |-------|-----------------|
 | **Demand paging & swap** | Page fault handler loads pages on access; evict to swap under memory pressure. |
-| **mmap** | Memory-mapped files — unifies file I/O and VM. |
+| **Multi-queue blk & sharded buffer cache** | Per-CPU resource partitioning, fine-grained locking, concurrent completion handling. |
 | **Signals** | Asynchronous notification (SIGKILL, SIGCHLD, SIGSEGV). User-space signal handlers. |
 | **Networking** | virtio-net driver → minimal IP/UDP/TCP stack → socket syscall. |
 | **Port a real program** | Lua interpreter or similar — proves the syscall interface is complete. |
