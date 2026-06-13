@@ -284,10 +284,18 @@ The three transports:
 
 We use **virtio-mmio** because QEMU's RISC-V `virt` machine doesn't
 require a full PCIe bus — virtio devices are wired at fixed MMIO
-addresses. Simpler for us (no PCI driver to write first), though
-production cloud VMs almost always use virtio-pci. The virtqueue
-protocol above the transport is identical regardless of which
-transport delivers it.
+addresses. Production cloud VMs almost always use virtio-pci, but
+using it would mean writing a PCI subsystem first (bus enumeration,
+config-space parsing, BAR decoding, interrupt routing) before we even
+reach the interesting virtio protocol — hundreds of lines of bus
+plumbing that teaches a hardware standard, not OS design. With MMIO
+we skip straight to the ring-buffer protocol, which is identical
+regardless of transport.
+
+(We don't include PCI as a stretch goal either — if you ever port to
+a physical RISC-V board with PCIe, the bus driver would come as part
+of that effort. As a standalone exercise it's low insight-per-effort:
+encyclopedic hardware knowledge rather than reusable OS principles.)
 
 QEMU places the virtio-blk device at `0x10001000`.
 
@@ -937,14 +945,120 @@ instruction.
 
 ---
 
-## Part 8: Interrupt Handling (Top Half / Bottom Half)
+## Part 8: Interrupt Delivery & Handling
 
-### The interrupt path
+### How the interrupt reaches us: PLIC
+
+When the device completes a request, it asserts an interrupt line.
+But the CPU doesn't know "which device" — all external devices funnel
+into a single cause code (`IRQ_S_EXT = 9`). The **PLIC** (Platform-Level
+Interrupt Controller) is the hardware that demultiplexes:
+
+```
+Device fires IRQ line
+      ↓
+PLIC (checks: priority > 0? enabled? above threshold?)
+      ↓
+Sets pending bit for hart 0's S-mode context
+      ↓
+CPU sees scause = IRQ_S_EXT (9) — "some external device wants attention"
+      ↓
+trap handler calls external_interrupt()
+      ↓
+plic_claim() → returns source number (1 = virtio, 10 = UART, etc.)
+      ↓
+dispatch to driver: virtio_blk_intr()
+      ↓
+plic_complete(irq) → re-arms the source
+```
+
+This is our **first device interrupt** — back in Phase 2 we handled
+only the timer (a CLINT/software interrupt, which doesn't go through
+the PLIC). So a small PLIC driver arrives here, even though the
+controller is platform infrastructure rather than the lesson's focus.
+
+**PLIC register layout (from PLIC_BASE = 0x0C000000):**
+
+The PLIC is a large MMIO region with four functional areas. Each hart
+has two "contexts" (M-mode = even, S-mode = odd); hart 0's S-mode
+context is **context 1**.
+
+```
+Offset          Region                          Stride
+──────────────────────────────────────────────────────────────────
+0x000000        Priority                        4 bytes per source
+                source N at PLIC_BASE + 4*N
+                value 0 = disabled, higher = more urgent
+
+0x002000        Enable bitmaps                  0x80 (128 bytes) per context
+                context 0 (M-mode) at +0x2000
+                context 1 (S-mode) at +0x2080
+                128 bytes × 8 = 1024 possible sources per context.
+                Each bit = one source. Bit 1 = virtio, bit 10 = UART.
+
+0x200000        Threshold + Claim/Complete      0x1000 (4K) per context
+                context 0: threshold at +0x200000, claim/complete at +0x200004
+                context 1: threshold at +0x201000, claim/complete at +0x201004
+                threshold: mask sources at or below this priority
+                claim/complete: same register — read to claim, write to complete
+```
+
+The 4K stride between contexts in the threshold/claim region is
+deliberate waste for alignment — hardware likes page-aligned regions.
+
+**Who assigns the source numbers?** The SoC/board designer — they're
+physical wiring decisions, not software-configurable. Each device's
+interrupt output is hardwired to a specific PLIC input pin. On QEMU's
+`virt` machine:
+
+```
+IRQ 1   ← virtio-mmio slot 0 (0x10001000)
+IRQ 2   ← virtio-mmio slot 1 (0x10002000)
+...
+IRQ 8   ← virtio-mmio slot 7 (0x10008000)
+IRQ 10  ← 16550 UART (0x10000000)
+```
+
+You can't remap these in software — the pin is the pin. On real
+hardware, the OS discovers these mappings from a **device tree**
+(`.dtb`) passed by firmware. We hardcode `VIRTIO0_IRQ = 1` and
+`UART0_IRQ = 10` because QEMU `virt` is a fixed platform.
+
+QEMU's `virt` numbering puts hart 0's S-mode handler at PLIC "context
+1" (context 0 is hart 0 M-mode). Phase 9 will compute the context
+from the hartid; for now it's hardcoded.
+
+**`plic_init()` programs four things for context 1:**
+
+```
+1. Priority[1] = 1          (source 1 is "on" — priority > 0)
+2. Enable[ctx 1] |= (1<<1)  (source 1 enabled for this context)
+3. Threshold[ctx 1] = 0     (accept any priority > 0)
+4. sie |= SEIE              (S-mode external interrupts reach the CPU)
+```
+
+**Two mechanics worth calling out** (the code depends on them and
+they're easy to get wrong):
+
+- **Claim and complete use the *same* register.** A *read* of the
+  claim/complete register claims the highest-priority pending source
+  (and returns its number); a *write* of that number back to the same
+  register signals completion. One register, two operations
+  distinguished by read vs. write.
+- **Completion is mandatory — it gates the source.** After a claim,
+  the PLIC will not deliver another interrupt for that source until you
+  complete it. Forget `plic_complete()` and the device goes silent
+  forever (its completions pile up in the used ring, but the interrupt
+  never fires again). This gating is exactly what makes the
+  top/bottom-half cycle safe: the source stays masked while we handle
+  it, so we can't re-enter for the same device.
+
+### The interrupt path (device side)
 
 When the device completes a request:
 1. It writes a used-ring entry (`id` = head descriptor, `len` = bytes)
 2. It increments `used.idx`
-3. It asserts an interrupt line → PLIC routes to a hart → trap fires
+3. It asserts its interrupt line → PLIC routes as described above
 
 ### Top half (interrupt handler)
 
@@ -1088,13 +1202,68 @@ Each boundary is a conscious design choice, not a failure to be
 
 ## Part 10: Putting It Together
 
+### Complete I/O walkthrough
+
+**Write block 5 to disk:**
+
+```
+1.  Caller invokes virtio_blk_rw(b)          b->blockno=5, b->data filled
+2.  Submit: acquire lock, allocate 3 descriptors from the free list
+3.  Fill request header in buf               type=WRITE, sector=40 (block 5 × 8)
+4.  Set up the 3-descriptor chain            header → data → status
+                                             (data has no WRITE flag — device reads from us)
+5.  Record owner, mark buf in-flight         disk.info[d0]=b, b->disk=1
+6.  Publish to avail ring + fences + doorbell
+7.  Release lock, caller sleeps              CPU runs other processes
+
+       ─── device side ───
+8.  Device reads the chain                   follows d0→d1→d2 via next pointers
+9.  Device DMAs b->data from guest RAM       4096 bytes → disk image at sector 40
+10. Device writes b->status = 0 (success)
+11. Device posts completion to used ring
+12. Device fires interrupt                   PLIC pin 1 asserted
+
+       ─── back in kernel ───
+13. Trap → PLIC claim → virtio_blk_intr      top-half handler entered
+14. ACK device, reap used ring               find d0 → recover b → set b->disk=0
+15. Free descriptor chain, wake all sleepers
+16. PLIC complete                            re-arm for next interrupt
+17. Caller wakes, sees b->disk==0            block 5 is now on disk
+```
+
+**Read block 5 back:**
+
+```
+1.  Caller invokes virtio_blk_rw(b)          b->blockno=5, b->data is empty
+2.  Submit: allocate descriptors, fill header    type=READ, sector=40
+3.  Set up 3-descriptor chain                same structure, but data descriptor has WRITE flag
+                                             (device writes into our buffer this time)
+4.  Publish, fence, doorbell, sleep          same protocol as write
+
+       ─── device side ───
+5.  Device reads the chain
+6.  Device DMAs INTO b->data from disk       4096 bytes → guest RAM
+7.  Post completion, fire interrupt
+
+       ─── back in kernel ───
+8.  Trap → reap → wake                       same interrupt path
+9.  Caller wakes                             b->data now holds what we wrote earlier
+```
+
+**The only difference between write and read:** the `type` field
+(IN vs. OUT) and whether the data descriptor carries the WRITE flag
+(telling the device which direction to DMA). The protocol machinery —
+chain, avail ring, interrupt, used ring, wake — is identical.
+
 ### Init sequence
 
-In `main.c`, after memory and trap setup:
+In `main.c`, after memory and process init (both are MMIO devices, so
+they come after paging is enabled):
 
 ```c
 void main(void) {
-    // ... existing init (kalloc, vm, proc, plic, ...) ...
+    // ... kalloc, vm, kmalloc, proc init ...
+    plic_init();          // enable S-mode external interrupts + virtio source
     virtio_blk_init();    // discover + configure the block device
     // ... start scheduler ...
 }
@@ -1106,48 +1275,59 @@ virtqueue structures, and initializes the free descriptor list.
 ### Smoke test: read block 0
 
 Before we have a filesystem, we can verify the driver works by
-reading block 0 (which will eventually hold the superblock):
+reading block 0 (which will eventually hold the superblock). The test
+runs as a **kernel thread**, not inline in `main()` — `virtio_blk_rw`
+sleeps, which needs a schedulable context with interrupts on:
 
 ```c
-struct buf b;
-memset(&b, 0, sizeof(b));
-b.blockno = 0;
-virtio_blk_rw(&b);
-// b.data now contains the first 4096 bytes of the disk image
-// b.status should be 0 (success)
+static void virtio_smoke_test(void) {
+    intr_on();                          // kernel threads start with interrupts off
+    struct buf *b = kmalloc(sizeof(*b));
+    memset(b, 0, sizeof(*b));
+    b->blockno = 0;
+    b->status  = 0xff;                  // sentinel: a real transfer overwrites this
+    virtio_blk_rw(b);
+    // b->data now holds the first 4096 bytes; b->status == 0 on success
+    kmfree(b);
+    proc_exit(0);
+}
 ```
+
+The `0xff` sentinel matters: a stubbed-out driver never touches
+`status`, so the test reports FAIL rather than a false PASS (a
+zero-initialized status would look like success). We register it with
+`proc_create_kernel(virtio_smoke_test, "vblk_test")` just before
+starting the scheduler.
 
 In Round 7-4, block 0 will contain a superblock with a magic number.
-For now, we just verify the DMA completes without errors.
-
-### PLIC routing
-
-The virtio-blk device is connected to PLIC interrupt source 1 on
-QEMU's `virt` machine. We already set up the PLIC in Phase 2 — we
-just need to enable this source and route it to a hart:
-
-```
-PLIC source 1 → priority > 0 → enabled in S-mode context → hart 0
-```
-
-When the device fires IRQ 1, the PLIC delivers it as an external
-interrupt (`scause` bit 63 set, code = 9 for S-mode external). Our
-existing trap handler dispatches to `plic_claim()` → check source →
-call `virtio_blk_intr()` → `plic_complete()`.
+For now, we just verify the DMA completes without errors. This thread
+is scaffolding — it goes away once the buffer cache (7-2) provides a
+real read path.
 
 ### File layout (new/modified)
 
 ```
 kernel/
 ├── drivers/
-│   └── virtio_blk.c     (NEW — init, submit, intr, rw)
+│   ├── virtio_blk.c      (NEW — init, submit, intr, rw)
+│   ├── virtio_blk.h      (NEW — driver public API)
+│   ├── plic.c            (NEW — PLIC driver: init, claim, complete)
+│   └── plic.h            (NEW — PLIC API + IRQ source numbers)
 ├── include/
 │   ├── virtio.h          (NEW — virtqueue structs, register offsets)
 │   ├── buf.h             (NEW — struct buf, BSIZE)
-│   └── mem_layout.h      (MODIFIED — add VIRTIO0 base address)
-├── trap.c                (MODIFIED — route PLIC IRQ 1 to virtio_blk_intr)
-└── main.c                (MODIFIED — call virtio_blk_init)
+│   └── mem_layout.h      (MODIFIED — add VIRTIO0_BASE)
+├── trap.c                (MODIFIED — external_interrupt() in both trap paths)
+└── main.c                (MODIFIED — plic_init + virtio_blk_init + smoke test)
+
+Makefile                  (MODIFIED — new objs; attach fs.img to QEMU via
+                            -drive + -device virtio-blk-device on the
+                            virtio-mmio bus)
 ```
+
+The disk needs a backing file. QEMU attaches `fs.img` (a blank raw
+image for now; Round 7-4's mkfs will format it) to the virtio-mmio
+bus so the device has something to DMA against.
 
 ---
 
@@ -1250,7 +1430,7 @@ struct virtq_used {       // device → driver
 };
 ```
 
-### MMIO Registers (key offsets from VIRTIO0 = 0x10001000)
+### MMIO Registers (key offsets from VIRTIO0_BASE = 0x10001000)
 
 | Offset | Name | R/W | Purpose |
 |--------|------|-----|---------|
@@ -1283,8 +1463,8 @@ which is *not* numeric order (FEATURES_OK=8 is set before DRIVER_OK=4):
 |------|-------|---------|
 | BSIZE | 4096 | Block size = page size |
 | NUM_DESC | 8 | Descriptor slots (tunable; QEMU queue default 256, hard max 1024) |
-| VIRTIO0 | 0x10001000 | MMIO base address |
-| VIRTIO_BLK_IRQ | 1 | PLIC interrupt source |
+| VIRTIO0_BASE | 0x10001000 | MMIO base address (mem_layout.h) |
+| VIRTIO0_IRQ | 1 | PLIC interrupt source (plic.h) |
 | VIRTIO_BLK_T_IN | 0 | Read operation |
 | VIRTIO_BLK_T_OUT | 1 | Write operation |
 

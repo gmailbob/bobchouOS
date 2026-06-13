@@ -180,6 +180,7 @@ Each is independent — pick any after Phase 9.
 
 | Topic | What it teaches |
 |-------|-----------------|
+| **Intrusive rbtree** | Replace linear scans (VMA lookup, sleep-timer queue, CFS scheduler) with O(log n) balanced tree. Further path: maple tree (Linux 6.1) for cache-friendly wide nodes + RCU lock-free reads. |
 | **Demand paging & swap** | Page fault handler loads pages on access; evict to swap under memory pressure. |
 | **Multi-queue blk & sharded buffer cache** | Per-CPU resource partitioning, fine-grained locking, concurrent completion handling. |
 | **Signals** | Asynchronous notification (SIGKILL, SIGCHLD, SIGSEGV). User-space signal handlers. |

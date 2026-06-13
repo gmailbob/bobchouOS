@@ -16,6 +16,33 @@
 #include "proc.h"
 #include "trapframe.h"
 #include "vm.h"
+#include "drivers/plic.h"
+#include "drivers/virtio_blk.h"
+
+/*
+ * external_interrupt — handle a PLIC-routed device interrupt (IRQ_S_EXT).
+ *
+ * Claim the source from the PLIC, dispatch to the owning driver, then
+ * signal completion so the PLIC re-arms the source. A claim of 0 means
+ * "no pending source" (a spurious external interrupt) — just return.
+ *
+ * Shared by both the kernel and user trap paths. See Lecture 7-1, Part 8.
+ */
+static void
+external_interrupt(void) {
+    int irq = plic_claim();
+    switch (irq) {
+    case 0:
+        return; /* spurious — nothing pending */
+    case VIRTIO0_IRQ:
+        virtio_blk_intr();
+        break;
+    default:
+        kprintf("external_interrupt: unexpected irq=%d\n", irq);
+        break;
+    }
+    plic_complete(irq);
+}
 
 /* ---- Exception name table ----
  *
@@ -81,9 +108,10 @@ kernel_trap(void) {
             if (this_cpu()->proc)
                 this_cpu()->need_resched = 1;
             break;
-
-            /* IRQ_S_EXT: PLIC external interrupts — future round */
-
+        case IRQ_S_EXT:
+            /* PLIC-routed device interrupt (e.g. virtio-blk completion). */
+            external_interrupt();
+            break;
         default:
             panic("kernel_trap: unexpected interrupt code=%d", (int)code);
         }
@@ -106,10 +134,8 @@ kernel_trap(void) {
             kprintf("kernel_trap: %s at %p\n", name, (void *)sepc_val);
             csrw(sepc, sepc_val + inst_len);
             break;
-
-            /* EXC_ECALL_S never reaches here — hardware routes S-mode ecall
-             * directly to M-mode (see entry.S Step 7: medeleg). */
-
+        /* EXC_ECALL_S never reaches here — hardware routes S-mode ecall directly
+         * to M-mode (see entry.S Step 7: medeleg). */
         default:
             panic("kernel_trap: %s  scause=%p sepc=%p stval=%p", name, (void *)scause_val,
                   (void *)sepc_val, (void *)stval_val);
@@ -197,6 +223,9 @@ user_trap(void) {
             csrw(sip, csrr(sip) & ~SIP_SSIP);
             wake_expired_sleepers();
             this_cpu()->need_resched = 1;
+            break;
+        case IRQ_S_EXT:
+            external_interrupt();
             break;
         default:
             kprintf("user_trap: unexpected interrupt code=%d\n", (int)code);

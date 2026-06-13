@@ -46,6 +46,8 @@ OBJS    = kernel/arch/entry.o \
           kernel/spinlock.o \
           kernel/wait_queue.o \
           kernel/drivers/uart.o \
+          kernel/drivers/plic.o \
+          kernel/drivers/virtio_blk.o \
           kernel/lib/string.o \
           kernel/lib/kprintf.o
 
@@ -64,7 +66,20 @@ TEST_OBJS = kernel/test/run_tests.o \
             kernel/test/test_vma.o
 
 QEMU    = qemu-system-riscv64
-QFLAGS  = -machine virt -nographic -bios none -kernel $(TARGET)
+
+# Disk image backing the virtio-blk device. Plain raw file; mkfs will
+# format it for real in Round 7-4. For now it just needs to exist so
+# the device has something to DMA against (smoke test reads block 0).
+DISK    = fs.img
+DISK_MB = 16
+
+# virtio-blk over the MMIO transport (QEMU virt wires virtio-mmio-bus.0
+# at 0x10001000 = VIRTIO0_BASE). if=none + -device keeps it off the
+# default (PCI) bus so it lands on MMIO where our driver looks.
+QFLAGS  = -machine virt -nographic -bios none -kernel $(TARGET) \
+          -global virtio-mmio.force-legacy=false \
+          -drive file=$(DISK),if=none,format=raw,id=x0 \
+          -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 
 USER_PROGS = user/init.elf user/utest.elf
 
@@ -99,21 +114,31 @@ $(TARGET): $(OBJS) linker.ld
 %.o: %.S
 	$(AS) $(ASFLAGS) -c -o $@ $<
 
-run: $(TARGET)
+# Disk image: create a zeroed raw file if it doesn't exist. Round 7-4's
+# mkfs will populate it with a real filesystem; until then it's blank.
+$(DISK):
+	dd if=/dev/zero of=$(DISK) bs=1M count=$(DISK_MB) 2>/dev/null
+
+run: $(TARGET) $(DISK)
 	$(QEMU) $(QFLAGS)
 
 # Test build: clean first so main.o is recompiled with -DRUN_TESTS,
 # then build kernel.elf with test objects linked in.
-test: clean
+test: clean $(DISK)
 	$(MAKE) CFLAGS="$(CFLAGS) -DRUN_TESTS" \
 	        OBJS="$(OBJS) $(TEST_OBJS)" \
 	        $(TARGET)
 	$(QEMU) $(QFLAGS)
 
-debug: $(TARGET)
+debug: $(TARGET) $(DISK)
 	$(QEMU) $(QFLAGS) -s -S
 
+# Note: clean does NOT remove $(DISK) — it's data, not a build artifact.
+# Use `make clean-disk` to discard it.
 clean:
 	rm -f $(OBJS) $(TEST_OBJS) $(TARGET) $(USER_PROGS)
 
-.PHONY: all run debug test clean
+clean-disk:
+	rm -f $(DISK)
+
+.PHONY: all run debug test clean clean-disk
