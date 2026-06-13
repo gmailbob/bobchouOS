@@ -142,6 +142,33 @@ test_hashtable(void) {
     }
     TEST_ASSERT(!found, "deleted collision entry not found");
 
+    /* --- Duplicate keys (same key, different values) --- */
+
+    DEFINE_HASHTABLE(ht3, TEST_HT_BITS);
+    hash_init(ht3, TEST_HT_BITS);
+
+    struct record dup1 = {.key = 7, .value = 100};
+    struct record dup2 = {.key = 7, .value = 200};
+    hash_add(ht3, &dup1.hash_link, TEST_HT_BITS, hash_int(7));
+    hash_add(ht3, &dup2.hash_link, TEST_HT_BITS, hash_int(7));
+
+    int dup_count = 0;
+    bucket_idx = hash_int(7) & (HT_SIZE(TEST_HT_BITS) - 1);
+    list_for_each_entry(pos, &ht3[bucket_idx], hash_link) {
+        if (pos->key == 7)
+            dup_count++;
+    }
+    TEST_ASSERT(dup_count == 2, "duplicate keys: both entries stored");
+
+    /* Deleting one leaves the other intact */
+    hash_del(&dup1.hash_link);
+    found = 0;
+    list_for_each_entry(pos, &ht3[bucket_idx], hash_link) {
+        if (pos->key == 7 && pos->value == 200)
+            found = 1;
+    }
+    TEST_ASSERT(found, "duplicate keys: second survives first's deletion");
+
     /* --- hash_int distribution sanity check --- */
 
     /* Different inputs should produce different hashes. */

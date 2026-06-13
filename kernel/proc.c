@@ -357,7 +357,7 @@ proc_kill(int pid) {
  *
  * Must be the first thing every kernel thread function calls.
  */
-static inline void
+void
 kthread_start(void) {
     spin_unlock(&this_proc()->lock);
     intr_on();

@@ -129,4 +129,49 @@ test_kmalloc(void) {
     kmfree(keep);
     /* The slab should still be alive (nr_alloc == 0 but not freed). */
     TEST_ASSERT(keep_pg->slab.class_idx == keep_class, "sole empty slab kept alive");
+
+    /* --- Exact class boundaries (32, 64, 128, 256, 512, 1024, 2048) --- */
+
+    void *b32 = kmalloc(32);
+    TEST_ASSERT(b32 != NULL, "kmalloc(32) exact boundary non-NULL");
+    TEST_ASSERT((uint64)b32 % 32 == 0, "kmalloc(32) aligned to 32");
+    kmfree(b32);
+
+    void *b64 = kmalloc(64);
+    TEST_ASSERT(b64 != NULL, "kmalloc(64) exact boundary non-NULL");
+    TEST_ASSERT((uint64)b64 % 64 == 0, "kmalloc(64) aligned to 64");
+    kmfree(b64);
+
+    void *b128 = kmalloc(128);
+    TEST_ASSERT(b128 != NULL, "kmalloc(128) exact boundary non-NULL");
+    TEST_ASSERT((uint64)b128 % 128 == 0, "kmalloc(128) aligned to 128");
+    kmfree(b128);
+
+    void *b256 = kmalloc(256);
+    TEST_ASSERT(b256 != NULL, "kmalloc(256) exact boundary non-NULL");
+    TEST_ASSERT((uint64)b256 % 256 == 0, "kmalloc(256) aligned to 256");
+    kmfree(b256);
+
+    void *b512 = kmalloc(512);
+    TEST_ASSERT(b512 != NULL, "kmalloc(512) exact boundary non-NULL");
+    TEST_ASSERT((uint64)b512 % 512 == 0, "kmalloc(512) aligned to 512");
+    kmfree(b512);
+
+    void *b1024 = kmalloc(1024);
+    TEST_ASSERT(b1024 != NULL, "kmalloc(1024) exact boundary non-NULL");
+    TEST_ASSERT((uint64)b1024 % 1024 == 0, "kmalloc(1024) aligned to 1024");
+    kmfree(b1024);
+
+    void *b2048 = kmalloc(2048);
+    TEST_ASSERT(b2048 != NULL, "kmalloc(2048) exact boundary non-NULL");
+    TEST_ASSERT((uint64)b2048 % 2048 == 0, "kmalloc(2048) aligned to 2048");
+    kmfree(b2048);
+
+    /* Boundary between slab and big-alloc: PG_SIZE is the first big-alloc */
+    void *bpg = kmalloc(PG_SIZE);
+    TEST_ASSERT(bpg != NULL, "kmalloc(PG_SIZE) big-alloc non-NULL");
+    TEST_ASSERT((uint64)bpg % PG_SIZE == 0, "kmalloc(PG_SIZE) page-aligned");
+    struct page *bpg_pg = pa_to_page((uint64)bpg);
+    TEST_ASSERT(bpg_pg->flags & PG_BIG, "kmalloc(PG_SIZE) has PG_BIG flag");
+    kmfree(bpg);
 }

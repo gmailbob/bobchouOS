@@ -111,6 +111,7 @@ struct cpu {
 
 void proc_init(void);
 void proc_bootstrap(void);
+void kthread_start(void);
 struct proc *proc_create_kernel(void (*fn)(void), const char *name);
 struct proc *proc_create_user(void); /* allocate proc + pagetable + trapframe (no VMAs yet) */
 int proc_fork(void);

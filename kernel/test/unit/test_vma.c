@@ -71,6 +71,18 @@ test_vma(void) {
     found = vma_find(&fake, 0x9000); /* above all VMAs */
     TEST_ASSERT(found == NULL, "vma_find: returns NULL above all");
 
+    /* --- vma_find_by_flags --- */
+
+    /* v1 and v3 have flags=0, add a heap VMA */
+    struct vma *v_heap = vma_create(0x7000, 0x8000, PTE_R | PTE_W | PTE_U, VMA_HEAP);
+    vma_add(&fake, v_heap);
+
+    struct vma *found_heap = vma_find_by_flags(&fake, VMA_HEAP);
+    TEST_ASSERT(found_heap == v_heap, "vma_find_by_flags: finds heap VMA");
+
+    struct vma *found_stack = vma_find_by_flags(&fake, VMA_STACK);
+    TEST_ASSERT(found_stack == NULL, "vma_find_by_flags: returns NULL for absent flag");
+
     /* --- vma_free_all --- */
     /* Build a minimal proc with a page table + one VMA with a mapped page */
     struct proc fake2;

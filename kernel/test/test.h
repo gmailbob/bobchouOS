@@ -16,7 +16,7 @@
 
 #include "kprintf.h"
 
-/* Counters — defined in run_tests.c */
+/* Counters — defined in run_unit_tests.c */
 extern int test_pass;
 extern int test_fail;
 
@@ -35,7 +35,10 @@ extern int test_fail;
         }                                                                                          \
     } while (0)
 
-/* Run all registered test suites. Called from kmain when RUN_TESTS is defined. */
-void run_tests(void);
+/* Unit tests: run at boot before the scheduler starts. */
+void run_unit_tests(void);
+
+/* Integration tests: run as a kernel process (needs scheduler). */
+void run_integration_tests(void);
 
 #endif /* TEST_H */

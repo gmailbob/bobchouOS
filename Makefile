@@ -51,19 +51,22 @@ OBJS    = kernel/arch/entry.o \
           kernel/lib/string.o \
           kernel/lib/kprintf.o
 
-TEST_OBJS = kernel/test/run_tests.o \
-            kernel/test/test_kprintf.o \
-            kernel/test/test_string.o \
-            kernel/test/test_trap.o \
-            kernel/test/test_kalloc.o \
-            kernel/test/test_vm.o \
-            kernel/test/test_kmalloc.o \
-            kernel/test/test_list.o \
-            kernel/test/test_hashtable.o \
-            kernel/test/test_spinlock.o \
-            kernel/test/test_wait_queue.o \
-            kernel/test/test_proc.o \
-            kernel/test/test_vma.o
+TEST_OBJS = kernel/test/run_unit_tests.o \
+            kernel/test/run_integration_tests.o \
+            kernel/test/unit/test_kprintf.o \
+            kernel/test/unit/test_string.o \
+            kernel/test/unit/test_trap.o \
+            kernel/test/unit/test_kalloc.o \
+            kernel/test/unit/test_vm.o \
+            kernel/test/unit/test_kmalloc.o \
+            kernel/test/unit/test_list.o \
+            kernel/test/unit/test_hashtable.o \
+            kernel/test/unit/test_spinlock.o \
+            kernel/test/unit/test_vma.o \
+            kernel/test/integration/test_proc.o \
+            kernel/test/integration/test_wait_queue.o \
+            kernel/test/integration/test_virtio_blk.o \
+            kernel/test/integration/test_spinlock_contention.o
 
 QEMU    = qemu-system-riscv64
 

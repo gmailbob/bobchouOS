@@ -104,7 +104,21 @@ test_vm(void) {
     TEST_ASSERT(dst[0] == 'h' && dst[1] == 'i' && dst[2] == '\0',
                 "copyinstr: copies string correctly with null terminator");
 
-    /* NOTE: unmapped-VA and too-short tests removed — they require process
-     * context (handle_page_fault needs this_proc() for VMA lookup). These
-     * error paths are exercised end-to-end via `make run` instead. */
+    /* --- map_pages: multi-page range --- */
+
+    pte_t *mpt = (pte_t *)kalloc();
+    memset(mpt, 0, PG_SIZE);
+
+    void *multi_pg = kalloc_pages(1); /* 2 contiguous pages */
+    ret = map_pages(mpt, 0x2000, PG_SIZE * 2, (uint64)multi_pg, PTE_R | PTE_W);
+    TEST_ASSERT(ret == 0, "map_pages: multi-page returns 0");
+
+    pte_t *mp0 = walk(mpt, 0x2000, 0);
+    pte_t *mp1 = walk(mpt, 0x3000, 0);
+    TEST_ASSERT(mp0 != NULL && (*mp0 & PTE_V), "map_pages: first page mapped");
+    TEST_ASSERT(mp1 != NULL && (*mp1 & PTE_V), "map_pages: second page mapped");
+    TEST_ASSERT(pte_to_pa(*mp1) == pte_to_pa(*mp0) + PG_SIZE,
+                "map_pages: pages are contiguous in PA");
+
+    kfree_pages(multi_pg, 1);
 }

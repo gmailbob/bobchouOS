@@ -57,4 +57,21 @@ test_string(void) {
     memset(dst, 0, sizeof(dst));
     memcpy(dst, src, 1);
     TEST_ASSERT(dst[0] == 1 && dst[1] == 0, "memcpy single byte");
+
+    /* --- strlen --- */
+
+    TEST_ASSERT(strlen("") == 0, "strlen: empty string");
+    TEST_ASSERT(strlen("a") == 1, "strlen: single char");
+    TEST_ASSERT(strlen("hello") == 5, "strlen: multi-char");
+
+    /* --- strcmp --- */
+
+    TEST_ASSERT(strcmp("abc", "abc") == 0, "strcmp: equal strings");
+    TEST_ASSERT(strcmp("abc", "abd") < 0, "strcmp: a < b at third char");
+    TEST_ASSERT(strcmp("abd", "abc") > 0, "strcmp: a > b at third char");
+    TEST_ASSERT(strcmp("ab", "abc") < 0, "strcmp: prefix is less than full");
+    TEST_ASSERT(strcmp("abc", "ab") > 0, "strcmp: full is greater than prefix");
+    TEST_ASSERT(strcmp("", "") == 0, "strcmp: two empty strings");
+    TEST_ASSERT(strcmp("a", "") > 0, "strcmp: non-empty > empty");
+    TEST_ASSERT(strcmp("", "a") < 0, "strcmp: empty < non-empty");
 }
