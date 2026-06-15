@@ -12,6 +12,7 @@ memset(void *dst, int val, uint64 n) {
     return dst;
 }
 
+/* src and dst must NOT overlap (copies front-to-back; add memmove if needed). */
 void *
 memcpy(void *dst, const void *src, uint64 n) {
     uint8 *d = (uint8 *)dst;

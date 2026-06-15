@@ -21,6 +21,7 @@
 #include "drivers/virtio_blk.h"
 #include "buf.h"
 #include "virtio.h"
+#include "kalloc.h"
 #include "mem_layout.h"
 #include "riscv.h"
 #include "spinlock.h"
@@ -49,28 +50,29 @@ virtio_read(uint32 off) {
  * page-aligned pages; the device reads them by physical address). We
  * track in-flight bufs and a free-descriptor list alongside them.
  *
- * All of this is protected by virtio_lock. */
+ * All of this is protected by disk.lock. */
 static struct {
     /* Virtqueue structures (allocated in virtio_blk_init). */
     struct virtq_desc *desc;   /* descriptor table (NUM_DESC entries) */
     struct virtq_avail *avail; /* available ring (driver → device) */
     struct virtq_used *used;   /* used ring (device → driver) */
 
-    /* Free-descriptor bookkeeping. free[i] == 1 means descriptor i is
-     * available. (A simple boolean array; alloc/free scan or stack it
-     * however you like — see alloc_desc/free_desc below.) */
-    int free[NUM_DESC];
-
     /* The last used-ring index we have processed. The device's
      * used->idx runs ahead of this as it completes requests; the
      * interrupt handler consumes [used_idx, used->idx). */
     uint16 used_idx;
 
-    /* For each descriptor that heads an in-flight chain, which buf it
-     * belongs to (so the interrupt handler can wake the right sleeper).
-     * Indexed by head descriptor number. */
+    /* Per-descriptor bookkeeping, both indexed 0..NUM_DESC-1:
+     *   free[i] == 1  → descriptor i is available (a simple boolean
+     *                   array; alloc/free scan or stack it however you
+     *                   like — see alloc_desc/free_desc below).
+     *   info[i]       → for a descriptor that HEADS an in-flight chain,
+     *                   the buf it belongs to, so the interrupt handler
+     *                   can wake the right sleeper. */
+    int free[NUM_DESC];
     struct buf *info[NUM_DESC];
 
+    /* Synchronization */
     struct spinlock lock;
     struct wait_queue wq; /* bufs sleep here waiting for completion */
 } disk;
@@ -79,17 +81,29 @@ static struct {
  * Descriptor allocation
  * ==================================================================== */
 
+static int
+count_free(void) {
+    int count = 0;
+    for (int i = 0; i < NUM_DESC; i++) {
+        if (disk.free[i])
+            count++;
+    }
+    return count;
+}
+
 /*
  * alloc_desc — claim one free descriptor.
  *
  * Returns its index, or -1 if none are free. Caller holds disk.lock.
- *
- * TODO: scan disk.free[] for a free descriptor, mark it used, return
- * its index. Return -1 if all NUM_DESC are taken.
  */
 static int
 alloc_desc(void) {
-    /* TODO */
+    for (int i = 0; i < NUM_DESC; i++) {
+        if (disk.free[i]) {
+            disk.free[i] = 0;
+            return i;
+        }
+    }
     return -1;
 }
 
@@ -97,13 +111,13 @@ alloc_desc(void) {
  * free_desc — return one descriptor to the free list.
  *
  * Caller holds disk.lock.
- *
- * TODO: mark descriptor i free again. (Optionally clear desc[i] for
- * cleanliness.) A double-free is a bug worth a panic.
  */
 static void
 free_desc(int i) {
-    /* TODO */
+    if (!disk.free[i])
+        panic("free_desc: attempt to double free disk.free[%d]", i);
+    disk.free[i] = 1;
+    /* optional: memset(&disk.desc[i], 0, sizeof(disk.desc[i])); */
 }
 
 /*
@@ -111,13 +125,16 @@ free_desc(int i) {
  *
  * Walks the chain via the NEXT flag / next field, freeing each link.
  * Caller holds disk.lock.
- *
- * TODO: loop: free desc i; if it has VIRTQ_DESC_F_NEXT, advance to
- * desc[i].next and repeat; otherwise stop.
  */
 static void
 free_chain(int i) {
-    /* TODO */
+    for (;;) {
+        disk.free[i] = 1;
+        if (disk.desc[i].flags & VIRTQ_DESC_F_NEXT)
+            i = disk.desc[i].next;
+        else
+            break;
+    }
 }
 
 /* ====================================================================
@@ -129,53 +146,53 @@ virtio_blk_init(void) {
     spin_init(&disk.lock, "virtio_blk");
     wq_init(&disk.wq, "virtio_blk");
 
-    /* Step 1: verify the device is present and is a block device.
-     * Read MAGIC_VALUE (== VIRTIO_MAGIC), VERSION (== VIRTIO_VERSION),
-     * DEVICE_ID (== VIRTIO_DEV_BLOCK), VENDOR_ID. panic() if any are
-     * wrong — there is no recovery from "the device isn't there."
-     *
-     * TODO: read and check the four identity registers. */
+    /* Step 1: verify the device is present and is a block device. */
+    if (virtio_read(VIRTIO_MMIO_MAGIC_VALUE) != VIRTIO_MAGIC ||
+        virtio_read(VIRTIO_MMIO_VERSION) != VIRTIO_VERSION ||
+        virtio_read(VIRTIO_MMIO_DEVICE_ID) != VIRTIO_DEV_BLOCK)
+        panic("virtio_blk_init: no virtio block device at VIRTIO0");
 
-    /* Steps 2-6: the status handshake + feature negotiation.
-     *   2. write 0 to STATUS                       (reset)
-     *   3. set ACKNOWLEDGE bit
-     *   4. set DRIVER bit
-     *   5. read DEVICE_FEATURES, decide what to accept, write
-     *      DRIVER_FEATURES. We negotiate nothing fancy — clearing the
-     *      features we don't want (e.g. VIRTIO_BLK_F_RO) is enough; the
-     *      simplest correct driver writes back 0.
-     *   6. set FEATURES_OK, then re-read STATUS and confirm FEATURES_OK
-     *      is still set (panic if the device cleared it — it rejected us)
-     *
-     * Build the status value incrementally: each step ORs in one more
-     * bit and writes the whole value back to STATUS.
-     *
-     * TODO: perform steps 2-6. */
+    /* Steps 2-6: the status handshake + feature negotiation. */
+    uint32 status = 0;
+    virtio_write(VIRTIO_MMIO_STATUS, status); /* reset */
+    status |= VIRTIO_STATUS_ACKNOWLEDGE;
+    virtio_write(VIRTIO_MMIO_STATUS, status);
+    status |= VIRTIO_STATUS_DRIVER;
+    virtio_write(VIRTIO_MMIO_STATUS, status);
 
-    /* Step 7: set up queue 0.
-     *   - QUEUE_SEL = 0
-     *   - read QUEUE_NUM_MAX; panic if it's 0 (queue unavailable) or
-     *     < NUM_DESC (device can't give us the depth we want)
-     *   - allocate the three structures in DMA-able memory and zero
-     *     them. kalloc() returns a zeroed, page-aligned page; one page
-     *     each is more than enough for NUM_DESC=8.
-     *   - QUEUE_NUM = NUM_DESC
-     *   - write the physical addresses (split into LOW/HIGH halves):
-     *       DESC   ← disk.desc
-     *       DRIVER ← disk.avail
-     *       DEVICE ← disk.used
-     *   - QUEUE_READY = 1
-     *
-     * Helpers you'll want: a 64-bit physical address splits as
-     * (uint32)pa into LOW and (uint32)(pa >> 32) into HIGH.
-     *
-     * TODO: allocate the queue, mark all descriptors free, program the
-     * queue registers. */
+    virtio_read(VIRTIO_MMIO_DEVICE_FEATURES);
+    virtio_write(VIRTIO_MMIO_DEVICE_FEATURES_SEL, 0); /* negotiate nothing */
+
+    status |= VIRTIO_STATUS_FEATURES_OK;
+    virtio_write(VIRTIO_MMIO_STATUS, status);
+
+    if (!(virtio_read(VIRTIO_MMIO_STATUS) & VIRTIO_STATUS_FEATURES_OK))
+        panic("virtio_blk_init: FEATURES_OK cannot be set");
+
+    /* Step 7: set up queue 0. */
+    virtio_write(VIRTIO_MMIO_QUEUE_SEL, 0);
+
+    uint32 num_max = virtio_read(VIRTIO_MMIO_QUEUE_NUM_MAX);
+    if (num_max == 0)
+        panic("virtio_blk_init: queue unavailable");
+    if (num_max < NUM_DESC)
+        panic("virtio_blk_init: device depth=%d < %d=NUM_DESC", num_max, NUM_DESC);
+
+    if (!(disk.desc = kalloc()) || !(disk.avail = kalloc()) || !(disk.used = kalloc()))
+        panic("virtio_blk_init: failed to kalloc desc, avail or used");
+
+    virtio_write(VIRTIO_MMIO_QUEUE_NUM, NUM_DESC);
+
+    virtio_write(VIRTIO_MMIO_QUEUE_DESC_LOW, (uint32)(uint64)disk.desc);
+    virtio_write(VIRTIO_MMIO_QUEUE_DESC_HIGH, (uint32)((uint64)disk.desc >> 32));
+    virtio_write(VIRTIO_MMIO_QUEUE_DRIVER_LOW, (uint32)(uint64)disk.avail);
+    virtio_write(VIRTIO_MMIO_QUEUE_DRIVER_HIGH, (uint32)((uint64)disk.avail >> 32));
+    virtio_write(VIRTIO_MMIO_QUEUE_DEVICE_LOW, (uint32)(uint64)disk.used);
+    virtio_write(VIRTIO_MMIO_QUEUE_DEVICE_HIGH, (uint32)((uint64)disk.used >> 32));
 
     /* Step 8: tell the device we're live — set DRIVER_OK in STATUS. */
-
-    /* TODO: write the final STATUS with DRIVER_OK set. */
-
+    status |= VIRTIO_STATUS_DRIVER_OK;
+    virtio_write(VIRTIO_MMIO_STATUS, status);
     kprintf("virtio_blk: init done\n");
 }
 
@@ -185,58 +202,57 @@ virtio_blk_init(void) {
 
 void
 virtio_blk_submit(struct buf *b) {
-    spin_lock(&disk.lock);
+    unsigned long irq;
+    spin_lock_irqsave(&disk.lock, &irq);
 
-    /* Build and publish the 3-descriptor request chain. Steps:
-     *
-     * 1. Allocate three descriptors (d0=header, d1=data, d2=status).
-     *    If fewer than three are free, wq_sleep(&disk.wq, &disk.lock)
-     *    and retry. All-or-nothing: never hold some while sleeping for
-     *    the rest (Lecture 7-1, Part 7).
-     *
-     * 2. Fill the header in the buf, then descriptor d0 (device reads).
-     *    The disk addresses in 512-byte sectors, so convert the logical
-     *    block number: sector = b->blockno * SECTORS_PER_BLOCK.
-     *      b->req.type     = read ? VIRTIO_BLK_T_IN : VIRTIO_BLK_T_OUT
-     *      b->req.reserved = 0
-     *      b->req.sector   = sector
-     *      desc[d0]: addr=&b->req, len=sizeof(b->req),
-     *                flags=VIRTQ_DESC_F_NEXT, next=d1
-     *    (Addresses are physical — identity-mapped, so the pointer IS
-     *    the physical address.)
-     *
-     * 3. Fill descriptor d1 (data). Direction depends on the op:
-     *      read  → device writes b->data → flags include VIRTQ_DESC_F_WRITE
-     *      write → device reads b->data  → no WRITE flag
-     *      desc[d1]: addr=b->data, len=BSIZE,
-     *                flags=VIRTQ_DESC_F_NEXT [| VIRTQ_DESC_F_WRITE], next=d2
-     *
-     * 4. Fill descriptor d2 (status, device writes one byte, end of chain):
-     *      desc[d2]: addr=&b->status, len=1,
-     *                flags=VIRTQ_DESC_F_WRITE, next=0
-     *
-     * 5. Record the chain owner and mark the buf in-flight:
-     *      disk.info[d0] = b;
-     *      b->disk = 1;
-     *
-     * 6. Publish to the avail ring, then bump idx. The fence between the
-     *    two is REQUIRED — the device must not see the new idx before
-     *    the ring slot it points to (Lecture 7-1, Part 7, "Memory fences"):
-     *      disk.avail->ring[disk.avail->idx % NUM_DESC] = d0;
-     *      __sync_synchronize();
-     *      disk.avail->idx += 1;
-     *      __sync_synchronize();
-     *
-     * 7. Ring the doorbell:
-     *      virtio_write(VIRTIO_MMIO_QUEUE_NOTIFY, 0);
-     *
-     * For Round 7-1 the only caller reads (block 0 smoke test), but
-     * thread the read/write direction through so writes work too — the
-     * buffer cache (7-2) will need both.
-     *
-     * TODO: implement steps 1-7. */
+    /* Allocate three descriptors (d0=header, d1=data, d2=status) */
+    for (;;) {
+        if (count_free() >= 3)
+            break;
+        wq_sleep(&disk.wq, &disk.lock);
+    }
+    int d0 = alloc_desc();
+    int d1 = alloc_desc();
+    int d2 = alloc_desc();
 
-    spin_unlock(&disk.lock);
+    /* Fill the header in the buf */
+    int write = 0; /* Hardcode to read for now. Later buffer cache will thread the flag */
+    b->req.type = write ? VIRTIO_BLK_T_OUT : VIRTIO_BLK_T_IN;
+    b->req.reserved = 0;
+    b->req.sector = b->blockno * SECTORS_PER_BLOCK;
+
+    /* Fill descriptor d0 (device reads) */
+    disk.desc[d0].addr = (uint64)&b->req;
+    disk.desc[d0].len = sizeof(b->req);
+    disk.desc[d0].flags = VIRTQ_DESC_F_NEXT;
+    disk.desc[d0].next = d1;
+
+    /* Fill descriptor d1 (data) */
+    disk.desc[d1].addr = (uint64)b->data;
+    disk.desc[d1].len = BSIZE;
+    disk.desc[d1].flags = VIRTQ_DESC_F_NEXT | (write ? VIRTQ_DESC_F_WRITE : 0);
+    disk.desc[d1].next = d2;
+
+    /* Fill descriptor d2 (status, device writes one byte, end of chain) */
+    disk.desc[d2].addr = (uint64)&b->status;
+    disk.desc[d2].len = 1;
+    disk.desc[d2].flags = VIRTQ_DESC_F_WRITE;
+    disk.desc[d2].next = 0;
+
+    /* Record the chain owner and mark the buf in-flight */
+    disk.info[d0] = b;
+    b->disk = 1;
+
+    /* Publish to the avail ring, then bump idx */
+    disk.avail->ring[disk.avail->idx % NUM_DESC] = d0;
+    __sync_synchronize();
+    disk.avail->idx += 1;
+    __sync_synchronize();
+
+    /* Ring the doorbell queue 0*/
+    virtio_write(VIRTIO_MMIO_QUEUE_NOTIFY, 0);
+
+    spin_unlock_irqrestore(&disk.lock, irq);
 }
 
 /* ====================================================================
@@ -247,19 +263,11 @@ void
 virtio_blk_rw(struct buf *b) {
     virtio_blk_submit(b);
 
-    /* Sleep until the interrupt handler clears b->disk. Standard
-     * condition-loop sleep: hold the lock, re-check the condition each
-     * wakeup (wakeups can be spurious).
-     *
-     * TODO:
-     *   spin_lock(&disk.lock);
-     *   while (b->disk == 1)
-     *       wq_sleep(&disk.wq, &disk.lock);
-     *   spin_unlock(&disk.lock);
-     *
-     * On return, b->status holds the device result. A production driver
-     * would surface an error if status != VIRTIO_BLK_S_OK; for now you
-     * may panic on a failed transfer. */
+    unsigned long irq;
+    spin_lock_irqsave(&disk.lock, &irq);
+    while (b->disk == 1)
+        wq_sleep(&disk.wq, &disk.lock);
+    spin_unlock_irqrestore(&disk.lock, irq);
 }
 
 /* ====================================================================
@@ -272,38 +280,21 @@ virtio_blk_intr(void) {
 
     /* Acknowledge the interrupt at the device. Reading INTERRUPT_STATUS
      * tells us why it fired; writing those bits back to INTERRUPT_ACK
-     * clears them. Do this before processing so a completion arriving
-     * mid-handler still latches a fresh interrupt. */
-    /* TODO:
-     *   uint32 status = virtio_read(VIRTIO_MMIO_INTERRUPT_STATUS);
-     *   virtio_write(VIRTIO_MMIO_INTERRUPT_ACK, status & 0x3); */
+     * clears them. & 0x3: mask both defined interrupt bits */
+    virtio_write(VIRTIO_MMIO_INTERRUPT_ACK, virtio_read(VIRTIO_MMIO_INTERRUPT_STATUS) & 0x3);
 
     /* Reap completions: the device has advanced disk.used->idx past our
-     * disk.used_idx for each chain it finished. For each new entry:
-     *   - read the head descriptor id from
-     *       disk.used->ring[disk.used_idx % NUM_DESC].id
-     *   - recover the buf: b = disk.info[id]
-     *   - mark it done: b->disk = 0
-     *   - free the descriptor chain (free_chain(id))
-     *   - advance disk.used_idx
-     * After the loop, wake everyone waiting (wq_wake_all) — each sleeper
-     * re-checks its own b->disk.
-     *
-     * A fence before reading used->idx ensures we see the device's
-     * writes to the ring (it wrote the entries before bumping idx).
-     *
-     * TODO:
-     *   __sync_synchronize();
-     *   while (disk.used_idx != disk.used->idx) {
-     *       int id = disk.used->ring[disk.used_idx % NUM_DESC].id;
-     *       struct buf *b = disk.info[id];
-     *       b->disk = 0;
-     *       free_chain(id);
-     *       disk.info[id] = NULL;
-     *       disk.used_idx += 1;
-     *   }
-     *   wq_wake_all(&disk.wq);
-     */
+     * disk.used_idx for each chain it finished. */
+    __sync_synchronize();
+    while (disk.used_idx < disk.used->idx) {
+        int id = disk.used->ring[disk.used_idx % NUM_DESC].id;
+        struct buf *b = disk.info[id];
+        b->disk = 0;
+        free_chain(id);
+        disk.info[id] = NULL;
+        disk.used_idx++;
+    }
+    wq_wake_all(&disk.wq);
 
     spin_unlock(&disk.lock);
 }

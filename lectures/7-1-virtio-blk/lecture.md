@@ -1076,6 +1076,22 @@ The interrupt handler runs with interrupts disabled. It must be fast:
 4. Update our last-seen used index.
 ```
 
+**The InterruptStatus / InterruptACK registers.** Reading
+InterruptStatus tells you *why* the device interrupted; writing those
+same bits back to InterruptACK clears them (the device won't lower its
+interrupt line until you do). virtio-mmio defines only two cause bits:
+
+| Bit | Name | Meaning |
+|-----|------|---------|
+| 0 (0x1) | VRING | a virtqueue has new used-ring entries (a request completed) |
+| 1 (0x2) | CONFIG | device configuration changed (e.g. disk resized) |
+| 2–31 | reserved | always 0 |
+
+We only care about VRING (a completed I/O); we don't use config-change
+notifications. The common idiom acks both defined bits with a `& 0x3`
+mask — defensive, so we never write a reserved bit even if the read
+returned something unexpected.
+
 The handler does **no I/O processing** — it just marks bufs as done
 and wakes sleepers. The actual "use the data" work happens in the
 process context that was waiting.

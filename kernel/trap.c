@@ -19,31 +19,6 @@
 #include "drivers/plic.h"
 #include "drivers/virtio_blk.h"
 
-/*
- * external_interrupt — handle a PLIC-routed device interrupt (IRQ_S_EXT).
- *
- * Claim the source from the PLIC, dispatch to the owning driver, then
- * signal completion so the PLIC re-arms the source. A claim of 0 means
- * "no pending source" (a spurious external interrupt) — just return.
- *
- * Shared by both the kernel and user trap paths. See Lecture 7-1, Part 8.
- */
-static void
-external_interrupt(void) {
-    int irq = plic_claim();
-    switch (irq) {
-    case 0:
-        return; /* spurious — nothing pending */
-    case VIRTIO0_IRQ:
-        virtio_blk_intr();
-        break;
-    default:
-        kprintf("external_interrupt: unexpected irq=%d\n", irq);
-        break;
-    }
-    plic_complete(irq);
-}
-
 /* ---- Exception name table ----
  *
  * Maps scause exception codes (bit 63 = 0) to human-readable names.
@@ -80,6 +55,31 @@ exc_name(uint64 scause) {
     if (scause < NUM_EXC && exc_names[scause])
         return exc_names[scause];
     return "unknown exception";
+}
+
+/*
+ * external_interrupt — handle a PLIC-routed device interrupt (IRQ_S_EXT).
+ *
+ * Claim the source from the PLIC, dispatch to the owning driver, then
+ * signal completion so the PLIC re-arms the source. A claim of 0 means
+ * "no pending source" (a spurious external interrupt) — just return.
+ *
+ * Shared by both the kernel and user trap paths. See Lecture 7-1, Part 8.
+ */
+static void
+external_interrupt(void) {
+    int irq = plic_claim();
+    switch (irq) {
+    case 0:
+        return; /* spurious — nothing pending */
+    case VIRTIO0_IRQ:
+        virtio_blk_intr();
+        break;
+    default:
+        kprintf("external_interrupt: unexpected irq=%d\n", irq);
+        break;
+    }
+    plic_complete(irq);
 }
 
 void
@@ -248,8 +248,8 @@ user_trap(void) {
                 p->killed = 1;
             break;
         default:
-            kprintf("user_trap: exception pid=%d scause=%p sepc=%p stval=%p\n", p->pid,
-                    (void *)scause_val, (void *)p->trapframe->epc, (void *)stval_val);
+            kprintf("user_trap: %s pid=%d scause=%p sepc=%p stval=%p\n", exc_name(scause_val),
+                    p->pid, (void *)scause_val, (void *)p->trapframe->epc, (void *)stval_val);
             p->killed = 1;
             break;
         }

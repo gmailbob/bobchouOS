@@ -49,16 +49,18 @@ struct page {
     };
 };
 
+/* Allocation: single page (kalloc) or power-of-two blocks (kalloc_pages) */
 void kalloc_init(void);
 void *kalloc(void);
 void kfree(void *pa);
 void *kalloc_pages(uint32 order);
 void kfree_pages(void *pa, uint32 order);
 
+/* Physical address <-> struct page conversion */
 struct page *pa_to_page(uint64 pa);
 uint64 page_to_pa(struct page *pg);
 
-/* Reference counting for user pages (COW preparation). */
+/* Reference counting for user pages (COW preparation) */
 void page_get(void *pa);
 void page_put(void *pa);
 

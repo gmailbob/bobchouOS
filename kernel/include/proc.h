@@ -109,27 +109,36 @@ struct cpu {
 
 /* --- Function declarations --- */
 
+/* Subsystem setup */
 void proc_init(void);
 void proc_bootstrap(void);
-void kthread_start(void);
+
+/* Process creation */
 struct proc *proc_create_kernel(void (*fn)(void), const char *name);
-struct proc *proc_create_user(void); /* allocate proc + pagetable + trapframe (no VMAs yet) */
+struct proc *proc_create_user(void); /* proc + pagetable + trapframe (no VMAs yet) */
+void kthread_start(void);            /* prologue every kernel thread runs first */
+
+/* Process syscalls */
 int proc_fork(void);
-int64 proc_sbrk(int64 n);
 int proc_exec(const char *path, char **argv);
-void wake_expired_sleepers(void);
-void scheduler(void);
-void run_queue_add(struct proc *p);
-void yield(void);
-void sched(void);
+int64 proc_sbrk(int64 n);
+
+/* Lifecycle */
 void proc_exit(int status);
 int proc_wait(int *status);
 int proc_kill(int pid);
+
+/* Scheduling */
+void scheduler(void);
+void yield(void);
+void sched(void);
+void run_queue_add(struct proc *p);
+void wake_expired_sleepers(void);
+extern void swtch(struct context *old, struct context *new); /* swtch.S */
+
+/* Current CPU / process accessors */
 struct cpu *this_cpu(void);
 struct proc *this_proc(void);
-
-/* swtch is in swtch.S */
-extern void swtch(struct context *old, struct context *new);
 
 /* Global locks and lists (defined in proc.c). */
 extern struct spinlock wait_lock;

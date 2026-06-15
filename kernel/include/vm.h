@@ -82,6 +82,7 @@ pte_flags(pte_t pte) {
 
 /* ---- Function declarations ---- */
 
+/* Kernel page table setup + low-level page table operations */
 void vm_create_kernel_pt(void);
 void vm_enable_paging(void);
 pte_t *walk(pte_t *root_pt, uint64 va, int alloc);
