@@ -392,6 +392,15 @@ All accesses are 32-bit. Note the addresses written to the device
 must be **physical** addresses, not virtual — the device DMAs
 directly to/from RAM (see Part 6, "Physical addresses only").
 
+One setup prerequisite is easy to forget: this register block at
+`0x10001000` is MMIO, so it must be **mapped into the kernel page
+table** before the driver touches it. Like the UART, CLINT, and PLIC,
+we identity-map one page for it in `vm_create_kernel_pt`
+(`kvm_map(VIRTIO0_BASE, VIRTIO0_BASE, PG_SIZE, PTE_R | PTE_W)`).
+Skip this and the very first `virtio_read(MAGIC_VALUE)` takes a load
+page fault — the device is "there" in hardware but invisible to a
+kernel running with paging on.
+
 ### The 8-step initialization handshake
 
 The virtio spec defines a strict protocol for bringing up a device:
@@ -418,12 +427,19 @@ Step 7:  Set up virtqueue(s):
          - Read QueueNumMax
          - Allocate descriptor table, available ring, used ring
          - Write their physical addresses to the device
-         - Write QueueReady = 1
+         - Write QueueReady = 1   ← activates the queue
 
 Step 8:  Write STATUS_DRIVER_OK (4) to Status — "I'm ready, go."
 ```
 
 After step 8, the device is live. We can submit requests.
+
+The last two writes — `QueueReady = 1` then `DRIVER_OK` — are the
+"go-live switches," and the order matters: ready the queue *before*
+announcing the driver is ready. Omitting either fails **silently** —
+no error, the device just ignores everything you submit. So if a
+freshly-written driver submits a request and `used->idx` never
+advances, a missing one of these two is the first thing to check.
 
 ### Feature negotiation
 
@@ -434,9 +450,35 @@ supports. For a block device, important features include:
 - `VIRTIO_BLK_F_SEG_MAX` — max segments per request
 - `VIRTIO_BLK_F_RO` — device is read-only
 
-We accept none of the optional features — just acknowledge the base
-capability. This keeps the driver minimal. A production driver would
-negotiate multi-segment support, discard/trim, etc.
+**The select/data register pair.** The feature space is wider than 32
+bits (64+ bits and growing), but the MMIO layout exposes only a 32-bit
+`DeviceFeatures` / `DriverFeatures` register. To reach the whole space,
+virtio banks it: a *selector* register picks which 32-bit word you're
+talking about, and the *data* register reads or writes that word.
+
+```
+DeviceFeaturesSel = 0  → DeviceFeatures now reads feature bits 0..31
+DeviceFeaturesSel = 1  → DeviceFeatures now reads feature bits 32..63
+
+DriverFeaturesSel = 0  → DriverFeatures now writes feature bits 0..31
+DriverFeaturesSel = 1  → DriverFeatures now writes feature bits 32..63
+```
+
+So accepting features is a two-write operation per word: set the
+selector (which window), then write the data (which bits). Setting the
+selector alone changes nothing — you still have to write the data
+register to actually record your accepted bits.
+
+We accept none of the optional features, so we write `0` to the data
+register. But "none" still spans both words: bits 0..31 *and* 32..63.
+A correct "accept nothing" therefore zeroes **both** banks —
+`(Sel=0, Features=0)` and `(Sel=1, Features=0)` — not just word 0.
+(QEMU happens to tolerate zeroing only word 0, since unwritten bits
+default to not-accepted, but the spec-correct driver does both.)
+
+This keeps the driver minimal. A production driver would read what the
+device offers in each word, AND it with what the driver supports, and
+write back the negotiated subset.
 
 ---
 
@@ -479,9 +521,12 @@ descriptors (header → data → status), linked together.
 The descriptor table is an array of `N` descriptors (we'll use N=8,
 matching xv6). This is just a `#define NUM_DESC 8` — changing it to
 128 or 256 requires zero code changes (the free-list, rings, and
-arrays all size themselves off this constant). The only constraint:
-`NUM_DESC ≤ QueueNumMax` (what the device reports). QEMU's virtio-blk
-defaults to a queue size of 256 (hard max 1024).
+arrays all size themselves off this constant). Two constraints on the
+value: `NUM_DESC ≤ QueueNumMax` (what the device reports), and it must
+be a **power of two** — the rings index with `idx % NUM_DESC` where
+`idx` is a free-running `uint16` that wraps at 65536, so the modulo
+only stays consistent across that wrap when NUM_DESC divides 65536.
+QEMU's virtio-blk defaults to a queue size of 256 (hard max 1024).
 
 Real-world values: Linux virtio-blk defaults to 256, NVMe drives
 typically use 1023 per queue (the spec allows up to 65,536 entries
@@ -544,7 +589,12 @@ struct virtq_used {
 ```
 
 The driver checks: "has `used.idx` advanced since I last looked?" If
-yes, new completions are available in the used ring.
+yes, new completions are available in the used ring. We keep our own
+cursor (`used_idx`) and reap entries until it catches up to the
+device's `used.idx`. Compare them with `!=`, not `<`: `idx` is a free-
+running `uint16` that wraps past 65535 back to 0, and a `<` test would
+stop reaping across that wrap. The `% NUM_DESC` maps the monotonic
+counter onto the actual ring slot.
 
 ### The split: who writes what
 
@@ -555,7 +605,72 @@ yes, new completions are available in the used ring.
 | Used ring | reads (reaps completions) | writes (posts completions) |
 
 This split is critical: neither side writes what the other writes.
-No locks needed — just memory ordering (fences) to ensure visibility.
+No locks needed between guest and host — just memory ordering (fences)
+to ensure visibility. (Part 10 has the full ownership map, extended to
+the per-buf fields, as a reference for the I/O walkthrough.)
+
+### How the device knows the layout
+
+This is worth pausing on, because it's easy to assume the driver
+"tells" the device where each field lives. It doesn't. The byte-level
+layout is a **shared contract fixed by the virtio spec** — both sides
+compile it in independently, the way two programs exchanging a network
+packet both know the header format without negotiating it.
+
+At runtime we communicate only three things, via MMIO registers:
+
+| Communicated at runtime | Fixed by the spec (baked into both sides) |
+|-------------------------|-------------------------------------------|
+| base address of each structure (the `QueueDesc/Driver/Device` register pairs) | the field offsets *within* each structure |
+| queue size (`QueueNum`) | which side writes which field |
+| doorbell / interrupt (timing) | endianness (little-endian) |
+
+So when we write the used ring's base address `X` to the device, that
+single number is the whole handoff. From it, the device computes every
+field offset using *its own copy* of the spec layout:
+
+```
+X+0   flags           (le16)
+X+2   idx             (le16)
+X+4   ring[0]:  id at X+4, len at X+8     (two le32)
+X+12  ring[1]:  id at X+12, len at X+16
+...   ring[i]  at  X + 4 + 8*i
+```
+
+Our `struct virtq_used` is simply the C transcription of that same
+spec layout. The device (QEMU's `hw/virtio/`) has the identical layout
+in its code. Neither transmits it — both were built from virtio spec
+§2.7. If our struct disagreed by even one byte (a reordered field, an
+unexpected pad), the device would read `idx` from the wrong offset and
+the whole protocol would silently corrupt.
+
+Two consequences fall out of this "shared static layout" model:
+
+- **No accidental padding allowed.** We rely on the C compiler laying
+  the struct out with no gaps, so `idx` really is at offset 2 and
+  `ring[]` at offset 4. It works here because the fields are naturally
+  aligned (`uint16`s at even offsets, the 8-byte `virtq_used_elem` at a
+  4-aligned offset) — no padding sneaks in. A struct that *could* pad
+  would need `__attribute__((packed))` to force the spec layout.
+- **Queue size is the one layout parameter that varies**, so it can't
+  be hardcoded in the spec — it's negotiated at runtime. The device
+  advertises a maximum (`QueueNumMax`), the driver picks a size ≤ that
+  and writes it back (`QueueNum`). After that both sides size `ring[]`
+  to the same count and both wrap with `% QueueNum`. Our `NUM_DESC`
+  must equal what we wrote to `QueueNum`, or the two sides' modulo
+  arithmetic would address different slots.
+
+> **Aside: the trailing event-suppression fields.** The spec puts one
+> more `le16` after each ring's `ring[]` array — `used_event` in the
+> avail ring, `avail_event` in the used ring. These belong to the
+> optional `VIRTIO_F_EVENT_IDX` feature (interrupt/notification
+> throttling for high-throughput devices): when negotiated, each side
+> writes the index at which it wants its *next* interrupt/notification,
+> letting the other side suppress the ones in between. We don't
+> negotiate the feature, so these fields sit inert — but they still
+> occupy a spec slot, and because that slot comes *after* `ring[]`, its
+> offset depends on the queue size. (Our structs name them rather than
+> calling them "unused," so the layout reads as the real spec layout.)
 
 ### Our choice: single virtqueue, single lock
 
@@ -809,12 +924,54 @@ virtual-to-physical mapping, you'd need an explicit translation step.
 
 ### Alignment
 
-The virtio spec requires the descriptor table, available ring, and
-used ring to be page-aligned. We allocate them with `kalloc()` which
-returns page-aligned memory. The data buffer in `struct buf` is not
-required to be page-aligned by the spec, but since BSIZE = PG_SIZE
-and we allocate bufs from page-aligned memory, alignment comes for
-free.
+The device reads the descriptor table, available ring, and used ring
+by physical address, with hardware alignment assumptions baked in. The
+modern (split-virtqueue) spec requires per-structure alignment:
+
+| Structure | Required alignment |
+|-----------|-------------------|
+| Descriptor table | 16 bytes |
+| Available ring | 2 bytes |
+| Used ring | 4 bytes |
+
+The *legacy* layout was stricter: the three structures had to sit in
+one contiguous, **page-aligned** block at fixed relative offsets. The
+modern layout relaxed this to the per-structure alignments above and
+let each structure live at an independently-programmed address (which
+is why there are three separate `QueueDesc/Driver/Device` address
+register pairs).
+
+We satisfy all of this trivially by giving **each structure its own
+page** via `kalloc()`. A page is 4096-aligned, which covers 16/2/4
+with enormous margin — and also satisfies the legacy page-aligned
+layout, so the code is correct regardless of which the device expects.
+
+**Why `kalloc` (a whole page) and not `kmalloc` (a tight fit)?** The
+structures are small — for NUM_DESC=8, roughly 128 / 22 / 70 bytes —
+so a slab allocator could pack them into far less than three pages.
+But this is the wrong place to economize:
+
+- **Alignment is a hardware contract, not a nicety.** `kalloc` gives a
+  page boundary by construction. Relying on "the slab allocator happens
+  to return 16-byte-aligned slots" couples the driver to an allocator
+  implementation detail — if `kmalloc` later added a per-slot header,
+  the descriptor table could land misaligned and the device would
+  silently misbehave. A page boundary can't drift.
+- **It's a one-time boot cost.** Three pages (12 KB) allocated once,
+  for the lifetime of the kernel — not per-I/O. On a 128 MB machine
+  that's noise. Saving ~3.7 KB once isn't worth the coupling risk.
+
+This is a general rule worth internalizing: **use page-granularity
+allocation (`kalloc`) for DMA buffers and hardware-facing structures
+where a device dictates alignment; use the slab allocator (`kmalloc`)
+for internal kernel objects** (inodes, file structs, small bookkeeping)
+where you just need "some bytes" and natural C alignment is enough.
+The virtqueue structures are squarely in the first category — the
+device touches them directly by physical address.
+
+The data buffer in `struct buf` doesn't need special handling: BSIZE =
+PG_SIZE and bufs come from page-aligned memory, so its alignment also
+comes for free.
 
 ### Lifetime and ownership
 
@@ -1006,6 +1163,15 @@ Offset          Region                          Stride
 The 4K stride between contexts in the threshold/claim region is
 deliberate waste for alignment — hardware likes page-aligned regions.
 
+When you turn these into macros, compute each address as
+`base + ctx * stride` from the **context-0 base** — e.g.
+`PLIC_ENABLE(ctx) = PLIC_BASE + 0x2000 + ctx * 0x80`. The tempting
+mistake is to hardcode context 1's address as the base
+(`0x2080 + ctx * 0x80`), which double-counts the stride and silently
+programs the *wrong* context. The enable bit then lands in a context
+nothing reads, the interrupt is never delivered, and the caller sleeps
+forever even though the device completed the I/O.
+
 **Who assigns the source numbers?** The SoC/board designer — they're
 physical wiring decisions, not software-configurable. Each device's
 interrupt output is hardwired to a specific PLIC input pin. On QEMU's
@@ -1102,7 +1268,7 @@ The process that called `virtio_blk_rw(b)` is sleeping in a loop:
 
 ```c
 while (b->disk == 1) {
-    sleep(b, &virtio_lock);
+    wq_sleep(&disk.wq, &disk.lock);
 }
 // b->data is now valid (for reads)
 // b->status has the device's result
@@ -1163,10 +1329,10 @@ returns immediately:
 // Post request to device. Does NOT wait for completion.
 // Caller must sleep on b until interrupt handler sets b->disk = 0.
 void virtio_blk_submit(struct buf *b) {
-    acquire(&virtio_lock);
+    spin_lock_irqsave(&disk.lock, &irq);
     // ... allocate descriptors, fill chain, publish, notify ...
     b->disk = 1;
-    release(&virtio_lock);
+    spin_unlock_irqrestore(&disk.lock, irq);
 }
 ```
 
@@ -1175,17 +1341,62 @@ The **sync wrapper** is what the buffer cache calls:
 ```c
 void virtio_blk_rw(struct buf *b) {
     virtio_blk_submit(b);
-    acquire(&virtio_lock);
-    while (b->disk) {
-        sleep(b, &virtio_lock);
-    }
-    release(&virtio_lock);
+    spin_lock_irqsave(&disk.lock, &irq);
+    while (b->disk)
+        wq_sleep(&disk.wq, &disk.lock);
+    spin_unlock_irqrestore(&disk.lock, irq);
 }
 ```
 
 This allows multiple bufs to be in-flight simultaneously: process A
 submits and sleeps, process B submits and sleeps, both wake on their
 respective interrupts.
+
+### Locking against the interrupt handler
+
+The lock calls above hide an important detail: `disk.lock` is shared
+between **two kinds of context** — process context (submit, rw) and
+interrupt context (the completion handler). That changes how the
+process side must take the lock.
+
+Consider the deadlock if the process side acquired the lock with
+interrupts still enabled:
+
+```
+process: lock(disk.lock)              ← lock held, interrupts ON
+process: ... ring the doorbell ...
+device:  completes, raises IRQ
+  ⚡ interrupt fires on THIS hart, mid-critical-section
+handler: lock(disk.lock)              ← spins: lock held by the code
+                                         we just interrupted
+   → the interrupted process can't release until the handler returns,
+     the handler can't return until it gets the lock → deadlock
+```
+
+On a single hart, an interrupt handler runs *on top of* whatever it
+interrupted; if that code holds the lock, the handler spins forever.
+The fix: the process side must acquire the lock with **interrupts
+disabled** (`spin_lock_irqsave` in our kernel — `intr_off` then
+acquire). The device interrupt then stays *pending* at the PLIC until
+we release and re-enable; only then does the handler run, finding the
+lock free.
+
+The interrupt handler itself uses the **plain** `spin_lock` — it
+already runs with interrupts disabled (trap entry masked them), so it
+has nothing to save or restore.
+
+| Context | Lock call | Why |
+|---------|-----------|-----|
+| `virtio_blk_submit` / `virtio_blk_rw` (process) | `spin_lock_irqsave` | shares the lock with the ISR — must mask IRQs to avoid the self-deadlock above |
+| `virtio_blk_intr` (interrupt) | plain `spin_lock` | already in IRQ-disabled context; nothing to save |
+
+**Sleeping inside the critical section is still fine.** `wq_sleep`
+internally releases `disk.lock` before it context-switches and
+re-acquires it on wakeup, and the saved interrupt flags ride along on
+the sleeper's stack — restored correctly at the final
+`spin_unlock_irqrestore`. This is the same lock-then-sleep pattern as
+`proc_wait` in Phase 5; the rule "a lock shared with an ISR is taken
+with interrupts off" composes cleanly with sleep/wakeup.
 
 ### Why the buffer cache uses the sync wrapper
 
@@ -1217,6 +1428,53 @@ Each boundary is a conscious design choice, not a failure to be
 ---
 
 ## Part 10: Putting It Together
+
+### Ownership map: who writes what
+
+Before the walkthrough, here's the reference to keep beside it. The
+driver and device share several structures in memory, and the bugs hide
+in *who is allowed to write which field*. Every structure below lives in
+RAM the driver allocated, but "allocated it" is not the same as "writes
+it" — once we hand the device a base address, the device writes parts of
+it by DMA.
+
+```
+  DRIVER (guest, our code)                        DEVICE (QEMU / host)
+  ────────────────────────                        ────────────────────
+  desc table   ─ writes addr/len/flags/next ───▶  reads (follows chains)
+  avail ring   ─ writes ring[], bumps idx ─────▶  reads (finds new work)
+               ◀──────── reads ring[], idx ─────  writes ring[], bumps idx   used ring
+  buf.req      ─ writes type/sector ───────────▶  reads (the request header)
+  buf.data     ─ writes (on WRITE) ────────────▶  reads (on WRITE)
+               ◀─────────── reads (on READ) ────  writes (on READ, by DMA)   buf.data
+  buf.status   ◀──────────────── reads ─────────  writes (1 byte result)
+```
+
+As a table — **A** = allocates, **W** = writes, **R** = reads:
+
+| Structure | Driver | Device | Notes |
+|-----------|--------|--------|-------|
+| descriptor table | A, W | R | driver fills each descriptor; device only follows them |
+| available ring | A, W | R | driver publishes chain heads + bumps `avail->idx` |
+| used ring | A, **R** | **W** | device fills `ring[]` + bumps `used->idx`; driver only reads |
+| `buf.req` (header) | W | R | type + sector; device reads it |
+| `buf.data` | W (write op) / R (read op) | R (write op) / W (read op) | direction flips per operation — the whole point of the WRITE descriptor flag |
+| `buf.status` | R | W | device writes the 1-byte result |
+| `disk.free[]`, `disk.info[]`, `disk.used_idx` | A, W, R | — | driver-private bookkeeping; the device never sees these |
+
+Three things make this tractable to reason about:
+
+1. **For any shared field, exactly one side writes it.** The avail ring
+   is driver-write / device-read; the used ring is the mirror. This
+   single-writer rule (Part 4) is what lets the rings work lock-free
+   between guest and host.
+2. **`buf.data` is the one field whose direction flips** — device-written
+   on a read, driver-written on a write. The `VIRTQ_DESC_F_WRITE` flag on
+   the data descriptor is how we tell the device which way to DMA.
+3. **`disk.free[]` / `info[]` / `used_idx` are ours alone** — pure
+   driver-side bookkeeping the device has no knowledge of. Don't confuse
+   `disk.used_idx` (our private consumer cursor) with `used->idx` (the
+   device's producer counter inside the shared used ring).
 
 ### Complete I/O walkthrough
 
@@ -1290,35 +1548,38 @@ virtqueue structures, and initializes the free descriptor list.
 
 ### Smoke test: read block 0
 
-Before we have a filesystem, we can verify the driver works by
-reading block 0 (which will eventually hold the superblock). The test
-runs as a **kernel thread**, not inline in `main()` — `virtio_blk_rw`
-sleeps, which needs a schedulable context with interrupts on:
+Before we have a filesystem, we can verify the driver works by reading
+block 0 (which will eventually hold the superblock). This is an
+**integration test**, not a unit test — `virtio_blk_rw` sleeps until
+the completion interrupt fires, so it needs a live scheduler and
+interrupts enabled. Our unit tests run at boot *before* the scheduler;
+this one runs in the integration tier, inside a kernel process (the
+integration runner calls `kthread_start()`, which releases the
+scheduler-held lock and enables interrupts before any test runs):
 
 ```c
-static void virtio_smoke_test(void) {
-    intr_on();                          // kernel threads start with interrupts off
-    struct buf *b = kmalloc(sizeof(*b));
-    memset(b, 0, sizeof(*b));
+void test_virtio_blk(void) {
+    struct buf *b = kmalloc(sizeof(struct buf));
+    TEST_ASSERT(b != 0, "kmalloc buf");
+    memset(b, 0, sizeof(struct buf));
     b->blockno = 0;
-    b->status  = 0xff;                  // sentinel: a real transfer overwrites this
+    b->status  = 0xff;   // sentinel: a real transfer overwrites this
+
     virtio_blk_rw(b);
-    // b->data now holds the first 4096 bytes; b->status == 0 on success
+
+    TEST_ASSERT(b->status == VIRTIO_BLK_S_OK, "read block 0: status OK");
     kmfree(b);
-    proc_exit(0);
 }
 ```
 
 The `0xff` sentinel matters: a stubbed-out driver never touches
 `status`, so the test reports FAIL rather than a false PASS (a
-zero-initialized status would look like success). We register it with
-`proc_create_kernel(virtio_smoke_test, "vblk_test")` just before
-starting the scheduler.
+zero-initialized status would look like success).
 
 In Round 7-4, block 0 will contain a superblock with a magic number.
-For now, we just verify the DMA completes without errors. This thread
-is scaffolding — it goes away once the buffer cache (7-2) provides a
-real read path.
+For now, we just verify the DMA round-trip completes with status OK.
+This test is scaffolding — it goes away once the buffer cache (7-2)
+provides a real read path.
 
 ### File layout (new/modified)
 
@@ -1333,8 +1594,10 @@ kernel/
 │   ├── virtio.h          (NEW — virtqueue structs, register offsets)
 │   ├── buf.h             (NEW — struct buf, BSIZE)
 │   └── mem_layout.h      (MODIFIED — add VIRTIO0_BASE)
+├── test/integration/
+│   └── test_virtio_blk.c (NEW — read-block-0 smoke test, runs post-scheduler)
 ├── trap.c                (MODIFIED — external_interrupt() in both trap paths)
-└── main.c                (MODIFIED — plic_init + virtio_blk_init + smoke test)
+└── main.c                (MODIFIED — call plic_init + virtio_blk_init at boot)
 
 Makefile                  (MODIFIED — new objs; attach fs.img to QEMU via
                             -drive + -device virtio-blk-device on the

@@ -127,6 +127,7 @@ vm_create_kernel_pt(void) {
     kvm_map(CLINT_BASE, CLINT_BASE, 0x10000, PTE_R | PTE_W);
     kvm_map(PLIC_BASE, PLIC_BASE, PLIC_SIZE, PTE_R | PTE_W);
     kvm_map(UART0_BASE, UART0_BASE, PG_SIZE, PTE_R | PTE_W);
+    kvm_map(VIRTIO0_BASE, VIRTIO0_BASE, PG_SIZE, PTE_R | PTE_W);
     kvm_map((uint64)_kernel_start, (uint64)_kernel_start, (uint64)_text_end - (uint64)_kernel_start,
             PTE_R | PTE_X);
     kvm_map((uint64)_text_end, (uint64)_text_end, PHYS_STOP - (uint64)_text_end, PTE_R | PTE_W);

@@ -4,14 +4,17 @@
  * The PLIC is a memory-mapped device. Its register file (base at
  * PLIC_BASE) has three regions we touch:
  *
- *   Priority:   PLIC_BASE + 4*irq          — priority of source `irq`
+ *   Priority:   PLIC_BASE + 4*irq             — priority of source `irq`
  *               (0 = disabled, higher = more urgent)
- *   Enable:     PLIC_BASE + 0x2080 + ctx*0x80 — bitmap of enabled sources
- *               for S-mode context `ctx` (hart 0 S-mode = context 1)
- *   Threshold:  PLIC_BASE + 0x201000 + ctx*0x1000 — context masks sources
+ *   Enable:     PLIC_BASE + 0x2000 + ctx*0x80 — bitmap of enabled sources
+ *               for context `ctx` (hart 0 S-mode = context 1)
+ *   Threshold:  PLIC_BASE + 0x200000 + ctx*0x1000 — context masks sources
  *               at or below this priority
- *   Claim/Comp: PLIC_BASE + 0x201004 + ctx*0x1000 — read to claim,
+ *   Claim/Comp: PLIC_BASE + 0x200004 + ctx*0x1000 — read to claim,
  *               write to complete
+ *
+ * Note each region's address is base + ctx*stride from the *context-0*
+ * base — don't bake context 1's offset into the base (see the macros).
  *
  * QEMU virt context numbering: context 0 = hart 0 M-mode, context 1 =
  * hart 0 S-mode. We run device interrupts in S-mode, so we use context 1.
@@ -28,10 +31,12 @@
 /* S-mode context for hart 0. Phase 9 will compute this from the hartid. */
 #define S_CONTEXT 1
 
-#define PLIC_PRIORITY(irq) (PLIC_BASE + 4 * (irq))
-#define PLIC_SENABLE(ctx) (PLIC_BASE + 0x2080 + (ctx)*0x80)
-#define PLIC_STHRESHOLD(ctx) (PLIC_BASE + 0x201000 + (ctx)*0x1000)
-#define PLIC_SCLAIM(ctx) (PLIC_BASE + 0x201004 + (ctx)*0x1000)
+// clang-format off
+#define PLIC_PRIORITY(irq)   (PLIC_BASE + 4 * (irq))
+#define PLIC_ENABLE(ctx)     (PLIC_BASE + 0x2000 + (ctx) * 0x80)
+#define PLIC_THRESHOLD(ctx)  (PLIC_BASE + 0x200000 + (ctx) * 0x1000)
+#define PLIC_CLAIM(ctx)      (PLIC_BASE + 0x200004 + (ctx) * 0x1000)
+// clang-format on
 
 static inline void
 plic_write(uint64 addr, uint32 val) {
@@ -49,10 +54,10 @@ plic_init(void) {
     plic_write(PLIC_PRIORITY(VIRTIO0_IRQ), 1);
 
     /* Enable the virtio source for hart 0's S-mode context. */
-    plic_write(PLIC_SENABLE(S_CONTEXT), 1 << VIRTIO0_IRQ);
+    plic_write(PLIC_ENABLE(S_CONTEXT), 1 << VIRTIO0_IRQ);
 
     /* Threshold 0: accept any source with priority > 0. */
-    plic_write(PLIC_STHRESHOLD(S_CONTEXT), 0);
+    plic_write(PLIC_THRESHOLD(S_CONTEXT), 0);
 
     /* Enable S-mode external interrupts in sie. The device interrupt
      * will now reach us as scause IRQ_S_EXT (9). */
@@ -61,10 +66,10 @@ plic_init(void) {
 
 int
 plic_claim(void) {
-    return plic_read(PLIC_SCLAIM(S_CONTEXT));
+    return plic_read(PLIC_CLAIM(S_CONTEXT));
 }
 
 void
 plic_complete(int irq) {
-    plic_write(PLIC_SCLAIM(S_CONTEXT), irq);
+    plic_write(PLIC_CLAIM(S_CONTEXT), irq);
 }

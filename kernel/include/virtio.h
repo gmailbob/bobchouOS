@@ -58,6 +58,10 @@
 #define VIRTQ_DESC_F_NEXT  (1 << 0) /* buffer continues into desc.next */
 #define VIRTQ_DESC_F_WRITE (1 << 1) /* device writes (vs. reads) this buffer */
 
+/* ---- InterruptStatus / InterruptACK bits ---- */
+#define VIRTIO_MMIO_INT_VRING  (1 << 0) /* a virtqueue has new used entries */
+#define VIRTIO_MMIO_INT_CONFIG (1 << 1) /* device config changed */
+
 /* ---- Block request types (virtio_blk_req.type) ---- */
 #define VIRTIO_BLK_T_IN  0 /* read: device → memory */
 #define VIRTIO_BLK_T_OUT 1 /* write: memory → device */
@@ -68,8 +72,12 @@
 #define VIRTIO_BLK_S_UNSUPP 2
 
 /* Number of descriptors in our queue. A #define — bumping it needs no
- * code changes (only NUM_DESC <= QUEUE_NUM_MAX must hold; QEMU defaults
- * to 256). 8 is plenty for our single-lock buffer cache. */
+ * code changes, given two constraints:
+ *   - NUM_DESC <= QUEUE_NUM_MAX (what the device supports; QEMU = 256)
+ *   - NUM_DESC is a power of two — the rings index with `idx % NUM_DESC`,
+ *     and the 16-bit idx free-runs and wraps at 65536, so the modulo only
+ *     stays consistent across that wrap when NUM_DESC divides 65536.
+ * 8 is plenty for our single-lock buffer cache. */
 #define NUM_DESC 8
 
 /* Disk sectors are always 512 bytes in the virtio protocol, regardless
@@ -93,12 +101,16 @@ struct virtq_desc {
     uint16 next;  /* next descriptor index (if F_NEXT set) */
 };
 
-/* Available ring: driver publishes heads of ready descriptor chains. */
+/* Available ring: driver publishes heads of ready descriptor chains.
+ * Trailing used_event is live only under VIRTIO_F_EVENT_IDX (we don't
+ * negotiate it): the driver would write the avail idx at which it wants
+ * the next interrupt. Inert here, but it occupies the spec slot after
+ * ring[], so its offset depends on the ring size NUM_DESC. */
 struct virtq_avail {
     uint16 flags;          /* usually 0 */
     uint16 idx;            /* next slot the driver will fill (wraps) */
     uint16 ring[NUM_DESC]; /* each entry = head descriptor index */
-    uint16 unused;         /* used_event (we don't use it) */
+    uint16 used_event;     /* VIRTIO_F_EVENT_IDX only; unused here */
 };
 
 /* One completion entry in the used ring. */
@@ -107,12 +119,16 @@ struct virtq_used_elem {
     uint32 len; /* total bytes the device wrote */
 };
 
-/* Used ring: device publishes completed chains. */
+/* Used ring: device publishes completed chains.
+ * Trailing avail_event is live only under VIRTIO_F_EVENT_IDX (we don't
+ * negotiate it): the DEVICE would write here the avail idx at which it
+ * wants its next notification. Inert here — the device never writes it
+ * in our config — but it occupies the spec slot after ring[]. */
 struct virtq_used {
     uint16 flags;
     uint16 idx; /* next slot the device will fill (wraps) */
     struct virtq_used_elem ring[NUM_DESC];
-    uint16 unused; /* avail_event (we don't use it) */
+    uint16 avail_event; /* VIRTIO_F_EVENT_IDX only; unused here */
 };
 
 /* Block request header. The device reads type+sector; the data buffer
