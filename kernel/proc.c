@@ -140,7 +140,7 @@ scheduler(void) {
          * be mid-(sleep_lock,p->lock) concurrently. Phase 9 (multi-core) must
          * fix this — e.g. snapshot the earliest deadline under sleep_lock
          * before acquiring p->lock. */
-        uint64 deadline = read_mtime() + TIMER_INTERVAL;
+        uint64 deadline = read_time() + TIMER_INTERVAL;
         spin_lock(&sleep_lock);
         if (!list_empty(&sleep_list)) {
             struct proc *sleeper = list_first_entry(&sleep_list, struct proc, sleep_link);
@@ -148,7 +148,9 @@ scheduler(void) {
                 deadline = sleeper->wake_time;
         }
         spin_unlock(&sleep_lock);
-        sbi_set_timer(deadline);
+
+        /* Arm the timer: under SSTC, write stimecmp directly (no ecall).
+         * TODO(student): csrw(stimecmp, deadline). */
 
         /* swtch to p. p resumes wherever it last left off:
          *   - brand-new proc: at kthread_start / user_proc_start, which
@@ -532,7 +534,7 @@ void
 wake_expired_sleepers(void) {
     spin_lock(&sleep_lock);
 
-    uint64 now = read_mtime();
+    uint64 now = read_time();
     struct proc *pos, *tmp; /* _safe: we list_del_init each node mid-loop */
     list_for_each_entry_safe(pos, tmp, &sleep_list, sleep_link) {
         if (now < pos->wake_time)

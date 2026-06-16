@@ -511,6 +511,14 @@ With SSTC:
 This is the cleanest path: no SBI `ecall` overhead, no M-mode handler,
 no SSIP forwarding. Modern Linux on RISC-V uses SSTC when available.
 
+> **→ We come back for approach 3 later.** bobchouOS starts with approach 1
+> (this lecture) so we can build the whole timer/scheduler stack on a
+> mechanism we fully control. Once that stack is mature, the stretch
+> lecture **"The SSTC Timer"** (`lectures/stretch-sstc-timer/`) migrates
+> us to approach 3 — deleting the M-mode forwarding entirely. We do it
+> before the multi-hart scheduler (Phase 9), because `stimecmp` is a
+> per-hart CSR and adopting it first keeps that code clean.
+
 **Summary of the three approaches:**
 
 | Approach | Who programs the timer | S-mode sees | Used by |

@@ -76,10 +76,11 @@ QEMU    = qemu-system-riscv64
 DISK    = fs.img
 DISK_MB = 16
 
-# virtio-blk over the MMIO transport (QEMU virt wires virtio-mmio-bus.0
-# at 0x10001000 = VIRTIO0_BASE). if=none + -device keeps it off the
-# default (PCI) bus so it lands on MMIO where our driver looks.
-QFLAGS  = -machine virt -nographic -bios none -kernel $(TARGET) \
+# virtio-blk over MMIO (QEMU virt wires virtio-mmio-bus.0 at VIRTIO0_BASE).
+# if=none + -device keeps it off the default PCI bus so it lands on MMIO.
+# -cpu rv64,sstc=on: pin SSTC (default-on, but documents the dependency and
+# guards against a QEMU default change). See lectures/stretch-sstc-timer.
+QFLAGS  = -machine virt -cpu rv64,sstc=on -nographic -bios none -kernel $(TARGET) \
           -global virtio-mmio.force-legacy=false \
           -drive file=$(DISK),if=none,format=raw,id=x0 \
           -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0

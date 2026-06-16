@@ -12,9 +12,10 @@
 #   6. Disable paging (satp = 0)
 #   7. Delegate traps to S-mode
 #   8. Configure PMP (allow S-mode full physical access)
-#   9. Set up M-mode trap vector (m_vec) and disable timer
-#  10. Store hart ID in tp (for this_cpu())
-#  11. mret → S-mode → kmain()
+#   9. Set up M-mode trap vector (m_vec, shutdown ecall only)
+#  10. Open S-mode timer gates: menvcfg.STCE (stimecmp) + mcounteren.TM (time)
+#  11. Store hart ID in tp (for this_cpu())
+#  12. mret → S-mode → kmain()
 #
 # Refer to Lectures 1-1, 2-1, 2-3, and 5-1.
 
@@ -70,28 +71,26 @@ bss_done:
     csrw  pmpcfg0, t0             # grant S-mode full R/W/X access
 
     # ---- Step 9: Set up M-mode trap vector ----
-    # m_vec.S handles timer interrupts and S-mode ecalls (mini-SBI).
-    # Timer is disabled at boot (mtimecmp = max); the scheduler arms
-    # it on-demand via SBI_SET_TIMER ecall when picking a process.
+    # m_vec.S now handles only the S-mode shutdown ecall (no timer, no MTIE).
     la    t0, m_scratch
     csrw  mscratch, t0            # m_vec uses mscratch for register saves
-
-    li    t0, CLINT_MTIMECMP(0)   # t0 = &mtimecmp[0]
-    li    t1, -1                  # t1 = 0xFFFFFFFFFFFFFFFF (max value)
-    sd    t1, 0(t0)               # mtimecmp = max → timer won't fire until armed
 
     la    t0, m_vec
     csrw  mtvec, t0               # M-mode traps go to m_vec
 
-    li    t0, MIE_MTIE
-    csrs  mie, t0                 # enable machine timer interrupt
+    # ---- Step 10: Open the S-mode timer gates (SSTC) ----
+    # menvcfg.STCE: S-mode may write stimecmp.  mcounteren.TM: S-mode may
+    # read the time CSR.  STCE is bit 63 — build it in a register (li/slli),
+    # it does not fit a csrs immediate.  See lectures/stretch-sstc-timer.
+    #
+    # TODO(student): set menvcfg.STCE (MENVCFG_STCE) and mcounteren.TM (MCOUNTEREN_TM).
 
-    # ---- Step 10: Store hart ID in tp ----
+    # ---- Step 11: Store hart ID in tp ----
     # tp is ABI-reserved (never modified by any function).
     # this_cpu() reads tp to index cpus[]. With one hart, tp = 0.
     csrr  tp, mhartid
 
-    # ---- Step 11: Enter S-mode ----
+    # ---- Step 12: Enter S-mode ----
     mret
 
 park:

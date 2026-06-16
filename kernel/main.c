@@ -38,10 +38,11 @@ kmain(void) {
      * before anything that could trap. */
     csrw(stvec, (uint64)kernel_vec);
 
-    /* Enable S-mode software interrupt (SSIP) — this is how M-mode
-     * forwards timer events to us. SIE is left disabled here; each
-     * kernel thread enables it via intr_on() at its start. */
-    csrw(sie, csrr(sie) | SIE_SSIE);
+    /* Enable the S-mode timer interrupt (STIE) — SSTC delivers ticks as
+     * scause=5. The global gate (SIE) stays off; each thread sets it via
+     * intr_on() at its start.
+     *
+     * TODO(student): enable SIE_STIE in sie (replaces the old SIE_SSIE). */
 
     kprintf("\nbobchouOS is booting...\n");
     kprintf("kernel: %p .. %p (%d bytes)\n", _kernel_start, _kernel_end,

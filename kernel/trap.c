@@ -100,10 +100,12 @@ kernel_trap(void) {
     /* Check scause bit 63 to distinguish interrupts vs exceptions. */
     if (scause_val & SCAUSE_INTERRUPT) {
         switch (code) {
-        case IRQ_S_SOFT:
-            /* Timer tick (forwarded from M-mode via SSIP).
-             * Clear SSIP so we don't re-trap on sret. */
-            csrw(sip, csrr(sip) & ~SIP_SSIP);
+        case IRQ_S_TIMER:
+            /* Timer tick (SSTC). STIP is a level signal (time >= stimecmp),
+             * not a latch — disarm by pushing stimecmp out, or it re-fires on
+             * sret. The scheduler re-arms with the real deadline.
+             *
+             * TODO(student): disarm the timer by writing stimecmp = (uint64)-1. */
             wake_expired_sleepers();
             if (this_cpu()->proc)
                 this_cpu()->need_resched = 1;
@@ -219,8 +221,11 @@ user_trap(void) {
 
     if (scause_val & SCAUSE_INTERRUPT) {
         switch (code) {
-        case IRQ_S_SOFT:
-            csrw(sip, csrr(sip) & ~SIP_SSIP);
+        case IRQ_S_TIMER:
+            /* Timer tick during a user process (SSTC). Same disarm rule as
+             * the kernel_trap case above.
+             *
+             * TODO(student): disarm the timer by writing stimecmp = (uint64)-1. */
             wake_expired_sleepers();
             this_cpu()->need_resched = 1;
             break;

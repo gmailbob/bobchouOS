@@ -11,15 +11,14 @@
 #define SBI_H
 
 /* SBI function IDs — dispatched by a7 in M-mode handler.
- * Shared between assembly (.S) and C files. */
-#define SBI_SET_TIMER 0
+ * Shared between assembly (.S) and C files.
+ * (SBI_SET_TIMER retired by SSTC — S-mode arms stimecmp directly.) */
 #define SBI_SHUTDOWN 1
 
 #ifndef __ASSEMBLER__
 
 #include "types.h"
 
-void sbi_set_timer(uint64 deadline);
 void sbi_shutdown(void);
 
 #endif /* !__ASSEMBLER__ */

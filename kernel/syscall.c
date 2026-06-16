@@ -16,7 +16,7 @@
 #include "trapframe.h"
 
 /* Upper bound on sleep() milliseconds — caps wake_time arithmetic so
- * read_mtime() + ms*MTIME_FREQ/1000 cannot overflow uint64. One hour is
+ * read_time() + ms*MTIME_FREQ/1000 cannot overflow uint64. One hour is
  * far beyond anything our programs need. */
 #define SLEEP_MS_MAX (60ULL * 60ULL * 1000ULL)
 
@@ -180,11 +180,11 @@ sys_sleep(void) {
     struct proc *p = this_proc();
     uint64 ms = p->trapframe->a0;
 
-    /* Clamp ms so read_mtime() + ms*ticks_per_ms can't overflow uint64.
+    /* Clamp ms so read_time() + ms*ticks_per_ms can't overflow uint64.
      * A hostile/huge ms would otherwise wrap wake_time to a tiny value and
      * wake the proc almost immediately. MS_MAX ticks fits comfortably. */
     uint64 ticks = MS_TO_MTIME(ms < SLEEP_MS_MAX ? ms : SLEEP_MS_MAX);
-    p->wake_time = read_mtime() + ticks;
+    p->wake_time = read_time() + ticks;
 
     /* Insert into sleep_list sorted by wake_time (earliest first).
      * Lock ordering: sleep_lock → p->lock. */

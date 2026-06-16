@@ -52,6 +52,10 @@
 
 /* ---- sip (Supervisor Interrupt Pending) bits ---- */
 #define SIP_SSIP            (_UL(1) << 1)   /* supervisor software pending */
+#define SIP_STIP            (_UL(1) << 5)   /* supervisor timer pending (read-only under SSTC) */
+
+/* ---- menvcfg (Machine Environment Configuration) bits ---- */
+#define MENVCFG_STCE        (_UL(1) << 63)  /* gate: S-mode may write stimecmp */
 
 /* ---- medeleg bits ---- */
 #define MEDELEG_ECALL_S     (_UL(1) << 9)
@@ -91,11 +95,14 @@
 
 /* ---- CLINT (Core Local Interruptor) — QEMU virt MMIO addresses ---- */
 #define CLINT_BASE          _UL(0x2000000)
-#define CLINT_MTIMECMP(hart) (CLINT_BASE + 0x4000 + 8 * (hart))
-#define CLINT_MTIME         (CLINT_BASE + 0xBFF8)
+/* mtimecmp/mtime macros retired by SSTC (stimecmp CSR + time CSR).
+ * CLINT_BASE kept — Phase 9 uses msip[hart] for IPIs. */
+
+/* ---- mcounteren (Machine Counter-Enable) bits ---- */
+#define MCOUNTEREN_TM       (_UL(1) << 1)  /* gate: S-mode may read the `time` CSR (rdtime) */
 
 /* ---- Timer ---- */
-#define MTIME_FREQ          _UL(10000000)  /* QEMU virt: mtime runs at 10 MHz */
+#define MTIME_FREQ          _UL(10000000)  /* QEMU virt: time runs at 10 MHz */
 #define TIMER_INTERVAL      _UL(100000)    /* 100,000 ticks = 10ms at 10 MHz */
 #define MS_TO_MTIME(ms)     ((ms) * (MTIME_FREQ / 1000))
 
@@ -130,10 +137,10 @@ sfence_vma(void) {
 #define SATP_SV39 (8UL << 60)
 #define MAKE_SATP(root_pt) (SATP_SV39 | ((uint64)(root_pt) >> 12))
 
-/* ---- CLINT MMIO read (accessible from S-mode via PMP) ---- */
+/* Current time via the `time` CSR. Requires mcounteren.TM (set in entry.S). */
 static inline uint64
-read_mtime(void) {
-    return *(volatile uint64 *)CLINT_MTIME;
+read_time(void) {
+    return csrr(time);
 }
 
 /* ---- S-mode interrupt enable/disable ---- */

@@ -11,15 +11,7 @@
 
 #include "sbi.h"
 
-.globl sbi_set_timer
 .globl sbi_shutdown
-
-# void sbi_set_timer(uint64 deadline)
-#   a0 = deadline (already in place per calling convention)
-sbi_set_timer:
-    li    a7, SBI_SET_TIMER
-    ecall
-    ret
 
 # void sbi_shutdown(void)
 #   Does not return (M-mode halts the machine).
