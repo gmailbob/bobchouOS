@@ -19,6 +19,6 @@ test_trap(void) {
     /* SSTC timer: S-mode writes stimecmp directly and reads it back.
      * Deadline parked far ahead so it won't fire during the test. */
     uint64 deadline = read_time() + 1000000000UL;
-    csrw(stimecmp, deadline);
+    set_timer(deadline);
     TEST_ASSERT(csrr(stimecmp) == deadline, "stimecmp round-trips the deadline");
 }

@@ -29,8 +29,7 @@ m_vec:
     csrr  t0, mcause
     andi  t1, t0, 0xff          # t1 = cause code (low 8 bits)
     bgez  t0, m_except          # bit 63 clear → exception
-    j     park                  # no M-mode interrupts expected (timer is now
-                                # S-mode's job via SSTC)
+    j     park                  # no M-mode interrupts expected
 
 m_except:
     li    t0, EXC_ECALL_S

@@ -79,11 +79,11 @@ bss_done:
     csrw  mtvec, t0               # M-mode traps go to m_vec
 
     # ---- Step 10: Open the S-mode timer gates (SSTC) ----
-    # menvcfg.STCE: S-mode may write stimecmp.  mcounteren.TM: S-mode may
-    # read the time CSR.  STCE is bit 63 — build it in a register (li/slli),
-    # it does not fit a csrs immediate.  See lectures/stretch-sstc-timer.
-    #
-    # TODO(student): set menvcfg.STCE (MENVCFG_STCE) and mcounteren.TM (MCOUNTEREN_TM).
+    li    t0, 1
+    slli  t0, t0, 63              # MENVCFG_STCE (bit 63 — too wide for an li immediate)
+    csrw  menvcfg, t0             # menvcfg.STCE: S-mode may write stimecmp
+    li    t0, MCOUNTEREN_TM
+    csrw  mcounteren, t0          # mcounteren.TM: S-mode may read the time CSR
 
     # ---- Step 11: Store hart ID in tp ----
     # tp is ABI-reserved (never modified by any function).

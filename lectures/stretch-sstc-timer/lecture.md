@@ -177,22 +177,23 @@ Here is the gotcha that surprises everyone the first time. The whole
 expect M-mode to be entirely out of the picture. It is not — not quite.
 
 S-mode is **forbidden** from accessing `stimecmp` unless M-mode has first
-flipped a permission bit: **`menvcfg.STCE`** (Supervisor Timer Counter
-Enable, bit 63 of the `menvcfg` CSR). If `STCE = 0` and S-mode executes
-`csrw stimecmp, t0`, the hart does *not* set a timer — it takes an
-**illegal-instruction exception** (`scause = 2`).
+flipped a permission bit: **`menvcfg.STCE`** (detailed below). If
+`STCE = 0` and S-mode executes `csrw stimecmp, t0`, the hart does *not*
+set a timer — it takes an **illegal-instruction exception** (`scause = 2`).
 
 So SSTC does not remove M-mode from the timer; it reduces M-mode's role
 to **two permission bits, set once, at boot.** After those flips, M-mode
 never touches the timer again. The two gates are independent and easy to
 conflate:
 
-- **`menvcfg.STCE`** (bit 63) — lets S-mode **write `stimecmp`** (arm the
-  timer). The focus of this part.
-- **`mcounteren.TM`** (bit 1) — lets S-mode **read the `time` CSR**
-  (`rdtime`), which is how we now read the clock. Separate permission,
-  separate bit. We never needed it before because the old `read_mtime()`
-  read the CLINT over MMIO, sidestepping the gate.
+- **`menvcfg.STCE`** (Machine Environment Configuration, the STCE
+  "Supervisor Timer Counter Enable" bit, bit 63) — lets S-mode **write
+  `stimecmp`** (arm the timer). The focus of this part.
+- **`mcounteren.TM`** (Machine Counter-Enable, the TM "time" bit, bit 1)
+  — lets S-mode **read the `time` CSR** (`rdtime`), which is how we now
+  read the clock. Separate permission, separate bit. We never needed it
+  before because the old `read_mtime()` read the CLINT over MMIO,
+  sidestepping the gate.
 
 Miss either and the corresponding instruction traps as illegal: `STCE`
 off → `csrw stimecmp` faults; `TM` off → `rdtime` faults.
@@ -227,13 +228,19 @@ Two reasons, both about M-mode keeping ultimate authority:
    so each privilege level can gate the feature for the level below it.
    We have no hypervisor, but the bit lives in `menvcfg` for this reason.
 
-> `menvcfg` ("machine environment configuration") is a register full of
-> these gates — `STCE` for the timer, `CBZE`/`CBCFE`/`CBIE` for
-> cache-block instructions, `FIOM` for fence-of-I/O ordering. It is the
-> general RISC-V pattern: a more-privileged mode holds *enable* bits that
-> unlock features for the mode below. The privilege drop SSTC gives us is
-> real, but it is *delegated*, not *unguarded*. M-mode says "you may,"
-> then steps back.
+> Both gates live in M-mode CSRs that are registers full of such bits:
+>
+> - **`menvcfg`** (Machine Environment Configuration) gates *features*:
+>   `STCE` for the SSTC timer, `CBZE`/`CBCFE`/`CBIE` for cache-block
+>   instructions, `FIOM` for fence-of-I/O ordering.
+> - **`mcounteren`** (Machine Counter-Enable) gates *counter reads*: `TM`
+>   for the `time` CSR, `CY` for `cycle`, `IR` for `instret`, plus the
+>   `hpmcounter` performance counters.
+>
+> Both follow the general RISC-V pattern: a more-privileged mode holds
+> *enable* bits that unlock capabilities for the mode below. The privilege
+> drop SSTC gives us is real, but it is *delegated*, not *unguarded* —
+> M-mode says "you may," then steps back.
 
 ### The bit-63 trap (literal trap, a coding one)
 

@@ -368,9 +368,8 @@ virtio_blk_intr(void) {
      * tells us why it fired; writing those bits back to INTERRUPT_ACK
      * clears them. We ack both defined causes (a VRING completion is the
      * one we act on; CONFIG we don't use but still clear). */
-    virtio_write(VIRTIO_MMIO_INTERRUPT_ACK,
-                 virtio_read(VIRTIO_MMIO_INTERRUPT_STATUS) &
-                     (VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG));
+    virtio_write(VIRTIO_MMIO_INTERRUPT_ACK, virtio_read(VIRTIO_MMIO_INTERRUPT_STATUS) &
+                                                (VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG));
 
     /* Reap completions. Two counters chase each other:
      *   disk.used->idx — the DEVICE's producer counter. At init we gave

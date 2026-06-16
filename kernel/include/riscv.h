@@ -137,10 +137,22 @@ sfence_vma(void) {
 #define SATP_SV39 (8UL << 60)
 #define MAKE_SATP(root_pt) (SATP_SV39 | ((uint64)(root_pt) >> 12))
 
-/* Current time via the `time` CSR. Requires mcounteren.TM (set in entry.S). */
+/* SSTC timer (both gated by M-mode bits set in entry.S Step 10).
+ *
+ * read_time:  current time, via the `time` CSR. Needs mcounteren.TM.
+ * set_timer:  arm the next tick by writing stimecmp. Needs menvcfg.STCE.
+ *             STIP is level-triggered (STIP = time >= stimecmp), so a
+ *             handler disarms with set_timer(-1) and the scheduler re-arms
+ *             with a real deadline — there is no separate "clear pending".
+ */
 static inline uint64
 read_time(void) {
     return csrr(time);
+}
+
+static inline void
+set_timer(uint64 deadline) {
+    csrw(stimecmp, deadline);
 }
 
 /* ---- S-mode interrupt enable/disable ---- */

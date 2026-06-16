@@ -149,8 +149,7 @@ scheduler(void) {
         }
         spin_unlock(&sleep_lock);
 
-        /* Arm the timer: under SSTC, write stimecmp directly (no ecall).
-         * TODO(student): csrw(stimecmp, deadline). */
+        set_timer(deadline);
 
         /* swtch to p. p resumes wherever it last left off:
          *   - brand-new proc: at kthread_start / user_proc_start, which
