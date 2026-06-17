@@ -42,9 +42,6 @@
 #define SSTATUS_SPIE        (_UL(1) << 5)
 #define SSTATUS_SIE         (_UL(1) << 1)
 
-/* ---- mie (Machine Interrupt Enable) bits ---- */
-#define MIE_MTIE            (_UL(1) << 7)   /* machine timer */
-
 /* ---- sie (Supervisor Interrupt Enable) bits ---- */
 #define SIE_SSIE            (_UL(1) << 1)   /* supervisor software */
 #define SIE_STIE            (_UL(1) << 5)   /* supervisor timer */
@@ -65,7 +62,6 @@
 #define IRQ_S_SOFT          1               /* supervisor software (SSIP) */
 #define IRQ_S_TIMER         5               /* supervisor timer */
 #define IRQ_S_EXT           9               /* supervisor external (PLIC) */
-#define IRQ_M_TIMER         7               /* machine timer */
 
 /* ---- Exception cause codes (bit 63 = 0, same for mcause and scause) ---- */
 #define EXC_INST_MISALIGN   0

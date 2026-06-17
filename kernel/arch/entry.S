@@ -71,10 +71,8 @@ bss_done:
     csrw  pmpcfg0, t0             # grant S-mode full R/W/X access
 
     # ---- Step 9: Set up M-mode trap vector ----
-    # m_vec.S now handles only the S-mode shutdown ecall (no timer, no MTIE).
-    la    t0, m_scratch
-    csrw  mscratch, t0            # m_vec uses mscratch for register saves
-
+    # m_vec.S now handles only the S-mode shutdown ecall. It never
+    # returns, so it needs no mscratch save area.
     la    t0, m_vec
     csrw  mtvec, t0               # M-mode traps go to m_vec
 
