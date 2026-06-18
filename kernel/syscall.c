@@ -172,8 +172,8 @@ sys_kill(void) {
  *
  * Returns 0 on success.
  *
- * Design: sorted sleep_list + precise hardware arming. See Lecture 6-3, Part 7.
- * Lock ordering: sleep_lock → p->lock (same as wake_expired_sleepers, proc_kill).
+ * Design: sorted tsleep_list + precise hardware arming. See Lecture 6-3, Part 7.
+ * Lock ordering: tsleep_lock → p->lock (same as wake_expired_sleepers, proc_kill).
  */
 static int64
 sys_sleep(void) {
@@ -186,25 +186,25 @@ sys_sleep(void) {
     uint64 ticks = MS_TO_MTIME(ms < SLEEP_MS_MAX ? ms : SLEEP_MS_MAX);
     p->wake_time = read_time() + ticks;
 
-    /* Insert into sleep_list sorted by wake_time (earliest first).
-     * Lock ordering: sleep_lock → p->lock. */
+    /* Insert into tsleep_list sorted by wake_time (earliest first).
+     * Lock ordering: tsleep_lock → p->lock. */
     unsigned long irq;
-    spin_lock_irqsave(&sleep_lock, &irq);
+    spin_lock_irqsave(&tsleep_lock, &irq);
 
-    struct list_head *insert_point = &sleep_list;
+    struct list_head *insert_point = &tsleep_list;
     struct proc *pos;
-    list_for_each_entry(pos, &sleep_list, sleep_link) {
+    list_for_each_entry(pos, &tsleep_list, tsleep_link) {
         if (pos->wake_time > p->wake_time) {
-            insert_point = &pos->sleep_link;
+            insert_point = &pos->tsleep_link;
             break;
         }
     }
-    list_add_tail(&p->sleep_link, insert_point);
+    list_add_tail(&p->tsleep_link, insert_point);
 
     /* Golden rule: only p->lock crosses the sched boundary. */
     spin_lock(&p->lock);
     p->state = PROC_SLEEPING;
-    spin_unlock(&sleep_lock); /* plain: keep irqs off for sched */
+    spin_unlock(&tsleep_lock); /* plain: keep irqs off for sched */
 
     sched(); /* outbound: p->lock crosses to scheduler */
 

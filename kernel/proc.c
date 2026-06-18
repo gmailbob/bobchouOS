@@ -31,10 +31,15 @@ static int next_pid = 0;
 struct spinlock wait_lock;
 struct spinlock run_queue_lock;
 struct spinlock pid_lock;
-struct spinlock sleep_lock;
+
+/* "tsleep" = timed sleep (BSD term): a process blocked in sys_sleep(n)
+ * until a wall-clock deadline. Distinct from event sleep (a proc waiting
+ * on a wait_queue, e.g. child_wq, woken by another process). tsleep_lock
+ * guards tsleep_list, the deadline-sorted queue of timer-sleepers. */
+struct spinlock tsleep_lock;
 struct proc *init_proc;
 
-LIST_HEAD(sleep_list); /* sorted by wake_time, earliest first */
+LIST_HEAD(tsleep_list); /* sorted by wake_time, earliest first */
 
 /* --- PID allocation (self-contained locking) --- */
 
@@ -131,23 +136,23 @@ scheduler(void) {
          * sleeper's deadline. This gives precise sleep wakeup instead of
          * up-to-one-tick latency.
          *
-         * LOCK ORDER NOTE: here we take sleep_lock while holding p->lock
-         * (p->lock -> sleep_lock). Everywhere else the order is the reverse
-         * (sleep_lock -> p->lock: see sys_sleep, wake_expired_sleepers,
+         * LOCK ORDER NOTE: here we take tsleep_lock while holding p->lock
+         * (p->lock -> tsleep_lock). Everywhere else the order is the reverse
+         * (tsleep_lock -> p->lock: see sys_sleep, wake_expired_sleepers,
          * proc_kill). That inversion is an ABBA hazard. It is safe ONLY on a
          * single hart, because the scheduler runs with interrupts off and is
          * the sole holder of p->lock in this window, so no other context can
-         * be mid-(sleep_lock,p->lock) concurrently. Phase 9 (multi-core) must
-         * fix this — e.g. snapshot the earliest deadline under sleep_lock
+         * be mid-(tsleep_lock,p->lock) concurrently. Phase 9 (multi-core) must
+         * fix this — e.g. snapshot the earliest deadline under tsleep_lock
          * before acquiring p->lock. */
         uint64 deadline = read_time() + TIMER_INTERVAL;
-        spin_lock(&sleep_lock);
-        if (!list_empty(&sleep_list)) {
-            struct proc *sleeper = list_first_entry(&sleep_list, struct proc, sleep_link);
+        spin_lock(&tsleep_lock);
+        if (!list_empty(&tsleep_list)) {
+            struct proc *sleeper = list_first_entry(&tsleep_list, struct proc, tsleep_link);
             if (sleeper->wake_time < deadline)
                 deadline = sleeper->wake_time;
         }
-        spin_unlock(&sleep_lock);
+        spin_unlock(&tsleep_lock);
 
         set_timer(deadline);
 
@@ -306,9 +311,9 @@ proc_wait(int *status) {
  * Sets p->killed = 1. If SLEEPING, wakes it so it can notice the flag.
  * Returns 0 on success, -1 if PID not found.
  *
- * Lock ordering: sleep_lock → p->lock (same as sys_sleep and
- * wake_expired_sleepers). We acquire sleep_lock first when the target
- * might be on the sleep_list.
+ * Lock ordering: tsleep_lock → p->lock (same as sys_sleep and
+ * wake_expired_sleepers). We acquire tsleep_lock first when the target
+ * might be on the tsleep_list.
  */
 int
 proc_kill(int pid) {
@@ -326,13 +331,13 @@ proc_kill(int pid) {
         return -1;
 
     unsigned long irq;
-    spin_lock_irqsave(&sleep_lock, &irq);
+    spin_lock_irqsave(&tsleep_lock, &irq);
     spin_lock(&p->lock);
     p->killed = 1;
     if (p->state == PROC_SLEEPING) {
-        if (!list_empty(&p->sleep_link)) {
-            /* On sleep_list — timer sleep path. */
-            list_del_init(&p->sleep_link);
+        if (!list_empty(&p->tsleep_link)) {
+            /* On tsleep_list — timer sleep path. */
+            list_del_init(&p->tsleep_link);
         } else {
             /* On a wait queue (wq_sleep path).
              * TODO(Phase 9): should hold wq->lock for list_del, but we
@@ -343,7 +348,7 @@ proc_kill(int pid) {
         run_queue_add(p);
     }
     spin_unlock(&p->lock);
-    spin_unlock_irqrestore(&sleep_lock, irq);
+    spin_unlock_irqrestore(&tsleep_lock, irq);
     return 0;
 }
 
@@ -409,7 +414,7 @@ proc_create(void (*fn)(void), const char *name) {
     INIT_LIST_HEAD(&p->children);
     INIT_LIST_HEAD(&p->vma_list);
     INIT_LIST_HEAD(&p->wait_link);
-    INIT_LIST_HEAD(&p->sleep_link);
+    INIT_LIST_HEAD(&p->tsleep_link);
 
     /* Parent-child linkage (PID 0 and 1 have no parent) */
     if (init_proc) {
@@ -459,7 +464,7 @@ proc_init(void) {
     spin_init(&wait_lock, "wait_lock");
     spin_init(&run_queue_lock, "run_queue_lock");
     spin_init(&pid_lock, "pid_lock");
-    spin_init(&sleep_lock, "sleep_lock");
+    spin_init(&tsleep_lock, "tsleep_lock");
 }
 
 /* --- Kernel threads --- */
@@ -514,38 +519,38 @@ proc_bootstrap(void) {
  * wake_expired_sleepers — wake all procs whose wake_time has passed.
  *
  * Called from the timer tick handler in trap.c (both kernel_trap and
- * user_trap paths). Walks the sorted sleep_list from front (earliest
+ * user_trap paths). Walks the sorted tsleep_list from front (earliest
  * deadline first), wakes expired procs, stops at the first non-expired
  * entry.
  *
  * Precondition: called from the timer interrupt handler, so interrupts are
- * already off — hence plain spin_lock on sleep_lock (no irqsave needed).
+ * already off — hence plain spin_lock on tsleep_lock (no irqsave needed).
  *
- * Lock ordering: sleep_lock → p->lock (same as sys_sleep and proc_kill).
+ * Lock ordering: tsleep_lock → p->lock (same as sys_sleep and proc_kill).
  *
- * Note: a proc may also be removed from sleep_list by proc_kill (which
- * checks !list_empty(&p->sleep_link) to distinguish timer-sleepers from
- * wait-queue-sleepers). Both paths hold sleep_lock for list removal and
+ * Note: a proc may also be removed from tsleep_list by proc_kill (which
+ * checks !list_empty(&p->tsleep_link) to distinguish timer-sleepers from
+ * wait-queue-sleepers). Both paths hold tsleep_lock for list removal and
  * use list_del_init to reset the node to self-pointing (the "not on any
  * list" state).
  */
 void
 wake_expired_sleepers(void) {
-    spin_lock(&sleep_lock);
+    spin_lock(&tsleep_lock);
 
     uint64 now = read_time();
     struct proc *pos, *tmp; /* _safe: we list_del_init each node mid-loop */
-    list_for_each_entry_safe(pos, tmp, &sleep_list, sleep_link) {
+    list_for_each_entry_safe(pos, tmp, &tsleep_list, tsleep_link) {
         if (now < pos->wake_time)
             break; /* list is sorted — all later entries are still in the future */
-        list_del_init(&pos->sleep_link); /* off sleep_list; node now self-pointing */
+        list_del_init(&pos->tsleep_link); /* off tsleep_list; node now self-pointing */
         spin_lock(&pos->lock);
         pos->state = PROC_RUNNABLE;
         run_queue_add(pos);
         spin_unlock(&pos->lock);
     }
 
-    spin_unlock(&sleep_lock);
+    spin_unlock(&tsleep_lock);
 }
 
 /* --- User process creation (Round 6-3) --- */

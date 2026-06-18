@@ -81,7 +81,7 @@ test_proc(void) {
     TEST_ASSERT(list_empty(&p->children), "proc_create_kernel: children list empty");
     TEST_ASSERT(list_empty(&p->child_wq.head), "proc_create_kernel: child_wq empty");
     TEST_ASSERT(list_empty(&p->vma_list), "proc_create_kernel: vma_list empty");
-    TEST_ASSERT(list_empty(&p->sleep_link), "proc_create_kernel: sleep_link self-pointing");
+    TEST_ASSERT(list_empty(&p->tsleep_link), "proc_create_kernel: tsleep_link self-pointing");
     TEST_ASSERT(p->wake_time == 0, "proc_create_kernel: wake_time = 0");
     TEST_ASSERT(p->pagetable == 0, "proc_create_kernel: no pagetable (kernel thread)");
     TEST_ASSERT(p->trapframe == 0, "proc_create_kernel: no trapframe (kernel thread)");

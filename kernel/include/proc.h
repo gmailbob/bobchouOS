@@ -95,8 +95,8 @@ struct proc {
     struct list_head wait_link; /* node on a wait queue (only when SLEEPING) */
 
     /* --- Sleep (sys_sleep) --- */
-    uint64 wake_time;            /* mtime deadline for timed sleep (0 = not sleeping) */
-    struct list_head sleep_link; /* node in global sleep_list */
+    uint64 wake_time;             /* mtime deadline for timed sleep (0 = not sleeping) */
+    struct list_head tsleep_link; /* node in global tsleep_list */
 };
 
 /* --- struct cpu --- */
@@ -142,7 +142,8 @@ struct proc *this_proc(void);
 
 /* Global locks and lists (defined in proc.c). */
 extern struct spinlock wait_lock;
-extern struct spinlock sleep_lock;
-extern struct list_head sleep_list;
+/* tsleep = timed sleep (BSD): timer-deadline sleepers. See proc.c. */
+extern struct spinlock tsleep_lock;
+extern struct list_head tsleep_list;
 
 #endif /* PROC_H */
