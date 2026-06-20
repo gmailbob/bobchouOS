@@ -13,6 +13,8 @@ void test_proc(void);
 void test_wait_queue(void);
 void test_virtio_blk(void);
 void test_spinlock_contention(void);
+void test_sleeplock(void);
+void test_bio(void);
 
 void
 run_integration_tests(void) {
@@ -30,6 +32,8 @@ run_integration_tests(void) {
     test_wait_queue();
     test_spinlock_contention();
     test_virtio_blk();
+    test_sleeplock();
+    test_bio();
 
     kprintf("\n=== integration: %d passed, %d failed ===\n", test_pass - unit_pass,
             test_fail - unit_fail);

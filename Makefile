@@ -44,7 +44,9 @@ OBJS    = kernel/arch/entry.o \
           kernel/exec.o \
           kernel/syscall.o \
           kernel/spinlock.o \
+          kernel/sleeplock.o \
           kernel/wait_queue.o \
+          kernel/bio.o \
           kernel/drivers/uart.o \
           kernel/drivers/plic.o \
           kernel/drivers/virtio_blk.o \
@@ -66,7 +68,9 @@ TEST_OBJS = kernel/test/run_unit_tests.o \
             kernel/test/integration/test_proc.o \
             kernel/test/integration/test_wait_queue.o \
             kernel/test/integration/test_virtio_blk.o \
-            kernel/test/integration/test_spinlock_contention.o
+            kernel/test/integration/test_spinlock_contention.o \
+            kernel/test/integration/test_sleeplock.o \
+            kernel/test/integration/test_bio.o
 
 QEMU    = qemu-system-riscv64
 

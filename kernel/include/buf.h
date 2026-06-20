@@ -20,6 +20,8 @@
 
 #include "types.h"
 #include "virtio.h"
+#include "sleeplock.h"
+#include "list.h"
 
 /* Block size: matches PG_SIZE (4096). One block = one page = one DMA
  * transfer. This constant propagates through the whole filesystem
@@ -36,8 +38,11 @@ struct buf {
     uint8 status;              /* device writes result: 0=ok, 1=err, 2=unsupp */
     int disk;                  /* 1 = in-flight (device owns buf), 0 = complete */
 
-    /* Round 7-2 will add: int valid, int refcnt, struct sleeplock lock,
-     * struct list_head lru_link. */
+    /* --- buffer-cache fields (Round 7-2, additive) --- */
+    int valid;                 /* has data[] been read from disk? */
+    int refcnt;                /* # bread holders + pins (0 = evictable) */
+    struct sleeplock lock;     /* held bread → brelse (guards data[]/valid) */
+    struct list_head lru_link; /* node in the bcache LRU list */
 };
 
 #endif /* BUF_H */

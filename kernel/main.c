@@ -5,6 +5,7 @@
  * The stack is already set up and BSS is zeroed.
  */
 
+#include "bio.h"
 #include "drivers/plic.h"
 #include "drivers/uart.h"
 #include "drivers/virtio_blk.h"
@@ -59,17 +60,20 @@ kmain(void) {
     kmalloc_init();
     proc_init();
 
-    /* Device init (after paging — both are MMIO-mapped):
-     * plic_init enables S-mode external interrupts and the virtio
-     * source; virtio_blk_init runs the device handshake + queue setup. */
+    /* Device init (after paging — all MMIO-mapped):
+     * 1. plic_init        — enable S-mode external interrupts + virtio source
+     * 2. virtio_blk_init  — device handshake + queue setup
+     * 3. binit            — buffer cache, layered on the driver above (7-2) */
     plic_init();
     virtio_blk_init();
+    binit();
 
 #ifdef RUN_TESTS
     run_unit_tests();
 #endif
 
     proc_bootstrap();
+
 #ifdef RUN_TESTS
     proc_create_kernel(run_integration_tests, "integ_test");
 #endif

@@ -268,12 +268,14 @@ virtio_blk_submit(struct buf *b) {
     int d1 = alloc_desc();
     int d2 = alloc_desc();
 
-    /* Fill the request header in the buf. Round 7-1 only reads (the
-     * block-0 smoke test); the direction is hardcoded here and the
-     * read/write paths are both written out so Round 7-2's buffer cache
-     * can thread a real flag through later. */
-    int write = 0;
-    b->req.type = write ? VIRTIO_BLK_T_OUT : VIRTIO_BLK_T_IN;
+    /* Fill the request header in the buf. The DIRECTION now comes from the
+     * caller: bread sets b->req.type = VIRTIO_BLK_T_IN, bwrite sets
+     * VIRTIO_BLK_T_OUT (Round 7-2). The descriptor flags below key off it.
+     *
+     * TODO(you, 7-2): derive `write` from b->req.type instead of hardcoding.
+     *   int write = (b->req.type == VIRTIO_BLK_T_OUT);
+     * (Round 7-1 hardcoded write=0 for the block-0 read smoke test.) */
+    int write = 0; /* TODO: write = (b->req.type == VIRTIO_BLK_T_OUT); */
     b->req.reserved = 0;
     b->req.sector = (uint64)b->blockno * SECTORS_PER_BLOCK; /* 64-bit math */
 
