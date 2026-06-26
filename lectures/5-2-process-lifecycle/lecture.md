@@ -536,19 +536,123 @@ the same portability reason. One extra fence instruction per lock/unlock
 > semantics (won't reorder around them). Same codegen, better
 > maintainability. xv6 uses the same approach.
 
-### Why disable interrupts while holding a spinlock
+### Deadlock with spinlocks: the landscape
+
+Before the rules, the one idea they all serve — and it's not specific to
+locks at all:
+
+> **A cycle in a dependency graph is stuck.** Whenever each node can only
+> make progress once the *next* node does, and the "needs" arrows form a
+> cycle — X needs Y needs … needs X — nothing in the cycle can advance.
+> You see this everywhere: circular `import`s between modules, two C
+> structs that contain each other *by value* (infinite size), a build
+> target that depends on its own output. **Deadlock is this same pattern
+> applied to runtime lock acquisition**: the arrow is "blocked, waiting to
+> acquire a lock the next actor holds," and a cycle means nobody releases,
+> ever.
+
+What makes deadlock the *nasty* member of the family: the other cycles
+are usually **caught** — the compiler rejects the mutually-by-value
+structs, the build tool flags the import loop. Those have a tie-breaker
+(a forward declaration / pointer, lazy init) or at least a detector.
+Deadlock's cycle forms **dynamically at runtime**, with no compiler to
+reject it and no built-in escape — so we prevent it by *discipline*: the
+rules below are exactly the tie-breakers that make a cycle unformable.
+
+> **Spin vs sleep is only how you wait, not whether you deadlock.** The
+> cycle is the deadlock; the lock *type* just changes the symptom. A
+> spinlock cycle **burns CPU** — a core hard-hangs, often hot. A
+> sleep-lock (mutex, Phase 7) cycle **sleeps forever** — the threads
+> vanish from the run queue and the CPU may even look idle. Same disease,
+> different presentation. So the wait-for-cycle definition is universal
+> across *all* blocking primitives (spinlocks, mutexes, `join`, pipes).
+
+For a **spinlock** specifically, a cycle can form in exactly **two ways**,
+distinguished by their fix:
+
+| Form | Cycle is between… | Caused by | Fix |
+|------|-------------------|-----------|-----|
+| **A — same-CPU self-contention** | the running code and an interrupt on the *same* core | an interrupt inserting a second context that wants the held lock | interrupts off while held |
+| **B — ordering cycle** | two or more *lockers* (threads/harts) | acquiring multiple locks in inconsistent order | one global acquire order |
+
+The next section ("Why disable interrupts") is Form A; the "Lock ordering"
+section later is Form B. Everything else is a special case of one of these
+(e.g. re-acquiring a lock you already hold is a Form-B cycle of length one).
+
+Of the two, **Form B is universal** — an ordering cycle deadlocks
+identically whether the locks are spinlocks, mutexes, or a mix, so the
+global acquire order must eventually span *all* lock types together.
+**Form A is spinlock-specific**: it exists only because spinning *with
+interrupts on* lets an interrupt contend on the same core. A sleep-lock
+(Phase 7) is held with interrupts *on* and does not have Form A — that's
+not an accident, it's the consequence of *how* it waits.
+
+> **Not deadlock — liveness failures.** A few related problems are *not*
+> deadlock because they have no fixed wait-for cycle: **livelock** (actors
+> keep spinning/retrying, making no progress), **lock convoy** (throughput
+> collapses under heavy contention), and **starvation** (one actor never
+> gets a turn). These are real but distinct, and mostly matter once we have
+> many harts (Phase 9 / the sharded-cache stretch goal). Don't lump them in
+> with deadlock — different cause, different fix.
+
+### Why disable interrupts while holding a spinlock (Form A)
+
+A spinlock's waiters *busy-wait*: they spin, burning the CPU, until the
+holder releases. That only works if the holder is **guaranteed to reach
+the release** — nothing on this CPU may run in between that also wants
+the lock, or it spins forever waiting for a holder that's stuck behind
+it. On one hart, the only thing that can make *other code* run mid-hold
+is an interrupt. So:
+
+> **The principle:** interrupts off ⇒ nothing else runs on this CPU ⇒ the
+> holder always reaches the release. That is *the* reason a spinlock must
+> be held with interrupts off.
+
+There are exactly **two interrupt-related deadlocks** — the only two ways
+an *interrupt* can introduce lock-contending code on this CPU, and both
+share the same fix: interrupts off. (Why only two? An interrupt's only
+effects on this CPU are: the handler runs, and — on interrupt-return —
+possibly a rescheduled thread runs. Lock-contention can therefore arrive
+only via the handler, hazard 1, or via that reschedule, hazard 2. There
+is no third path.)
+
+**Hazard 1 — ISR self-deadlock.** The interrupt handler — the *interrupt
+service routine* (ISR) — *itself* takes the same lock.
 
 ```
-CPU holds spinlock for the run queue
-  → timer interrupt fires
-  → kernel_trap_ret → yield() tries to acquire run queue lock
-  → DEADLOCK — we're spinning waiting for ourselves to release
+CPU holds L  →  device interrupt fires  →  ISR runs, tries to acquire L
+             →  DEADLOCK: the ISR spins, but the interrupted code that
+                holds L can't resume to release it
 ```
 
-The CPU that holds the lock is the same CPU that took the interrupt.
-It will spin forever because it can never return to release the lock.
+This applies only to locks an ISR actually touches — e.g. a device
+driver's lock, taken by both the request path and the completion ISR.
 
-**Rule: disable interrupts before acquiring any spinlock.**
+**Hazard 2 — preemption deadlock.** No ISR touches the lock, but the
+timer interrupt triggers a *reschedule* to another thread that wants it.
+
+```
+thread A holds L  →  timer interrupt → yield()  →  scheduler runs thread B
+                  →  B tries to acquire L
+                  →  DEADLOCK: B spins; A is off-CPU and can't release
+                     (single hart — B's spinning means A never runs)
+```
+
+This applies to **any** lock shared between threads — which is every
+spinlock, since a lock exists to be contended. So hazard 2 alone is why
+the rule is *blanket*: disable interrupts for **every** spinlock, not
+just the ones ISRs touch.
+
+**Rule: disable interrupts before acquiring any spinlock** — established
+*by* acquiring with the irqsave variant (next section), which disables
+them as part of taking the lock.
+
+> **On multiple harts (preview, Phase 9):** interrupts-off does *not*
+> stop another *hart* from acquiring L — and that's intended. A spinlock's
+> whole job on SMP is to make the other core spin briefly until release.
+> Interrupts-off addresses only the two *same-core* hazards above; bounded
+> critical sections keep the cross-core spin short. The rule is unchanged,
+> its justification is just per-hart.
 
 ### Two variants: irqsave vs plain
 
@@ -607,6 +711,13 @@ restores would see 0 (interrupts never re-enabled).
 - External/public functions → `irqsave` (caller might have interrupts on)
 - Internal code already inside a lock → plain `spin_lock`/`spin_unlock`
 
+> **All acquirers of a lock must agree on the interrupt discipline.** If
+> any path takes a lock that an ISR also touches, *every* path that takes
+> it must do so with interrupts off (`irqsave`, or plain while provably
+> off). Take it plain on a path where interrupts are still on and you've
+> re-opened Form-A Hazard 1 — the ISR can fire mid-hold and self-deadlock.
+> The variant isn't a free per-call choice; it's a property of the lock.
+
 > **xv6's approach (for reference):** Instead of passing flags around,
 > xv6 stores the interrupt state in `struct cpu`: a nesting counter
 > (`noff`) and a saved enable bit (`intena`). `push_off()` increments
@@ -624,16 +735,27 @@ restores would see 0 (interrupts never re-enabled).
 | `run_queue_lock` | run queue list | run_queue_add helper (self-contained) |
 | `pid_lock` | PID counter | alloc_pid (self-contained) |
 
-### Lock ordering
+### Lock ordering (Form B)
 
 When code needs multiple locks, it must always acquire them in the
-same global order. Otherwise:
+same global order. Otherwise (the classic ABBA cycle):
 
 ```
 CPU A: lock(wait_lock) → trying lock(p->lock)  ← BLOCKED
 CPU B: lock(p->lock)   → trying lock(wait_lock) ← BLOCKED
                          ↑ DEADLOCK ↑
 ```
+
+This is the two-lock case of the general Form-B cycle. Two corollaries:
+
+- **It generalizes to any length.** Three locks acquired A→B, B→C, C→A
+  deadlock just the same — *any* cycle in the wait-for graph, not just
+  back-to-back pairs. A single global order forbids every cycle length at
+  once, which is why "always ascending" is the whole fix.
+- **A length-one cycle is self-deadlock.** Re-acquiring a lock you already
+  hold waits for yourself — `spin_lock(&L); ...; spin_lock(&L);` spins
+  forever. Our spinlocks are **non-recursive**; the usual trap is a helper
+  that locks `L` called from a path already holding `L`.
 
 Our order (never violated):
 
