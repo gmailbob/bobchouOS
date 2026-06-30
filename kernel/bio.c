@@ -34,7 +34,8 @@ static struct {
 } bcache;
 
 /*
- * binit — one-time boot setup.
+ * binit — one-time boot setup: init the index lock, the LRU list, and each
+ * buffer's sleep-lock. All buffers start in the list, refcnt 0, invalid.
  */
 void
 binit(void) {
@@ -47,13 +48,18 @@ binit(void) {
 }
 
 /*
- * bget — return the locked buffer for (dev, blockno), recycling if needed.
+ * bget — return the buffer for (dev, blockno), locked, recycling on a miss.
+ *
+ * In both paths: bump refcnt under bcache.lock (this reserves the buffer so
+ * it can't be recycled away), release the spinlock, THEN sleep_lock — we
+ * must not sleep holding a spinlock. See Lecture 7-2, Part 5.
  */
 static struct buf *
 bget(uint32 dev, uint32 blockno) {
     unsigned long irq;
     spin_lock_irqsave(&bcache.lock, &irq);
 
+    /* Loop 1 — cache hit: block already resident. */
     struct buf *b;
     list_for_each_entry(b, &bcache.lru, lru_link) {
         if (b->dev == dev && b->blockno == blockno) {
@@ -64,6 +70,8 @@ bget(uint32 dev, uint32 blockno) {
         }
     }
 
+    /* Loop 2 — miss: recycle the least-recently-used unused buffer. Scan
+     * from the LRU end (tail); valid=0 forces bread to re-read from disk. */
     list_for_each_entry_reverse(b, &bcache.lru, lru_link) {
         if (b->refcnt == 0) {
             b->dev = dev;
@@ -76,17 +84,22 @@ bget(uint32 dev, uint32 blockno) {
         }
     }
 
+    /* Every buffer is in use at once — assertion of the NBUF bound, not a
+     * runtime error path. See Lecture 7-2, Subtlety 4. */
     panic("bget: no buffers");
 }
 
 /*
- * bread — bget plus "fill from disk on a miss".
+ * bread — return a locked buffer holding the block's data.
+ *
+ * Cache hit (valid): pure memory. Miss: read from disk once, then mark
+ * valid so future breads skip the disk until this buffer is recycled.
  */
 struct buf *
 bread(uint32 dev, uint32 blockno) {
     struct buf *b = bget(dev, blockno);
     if (!b->valid) {
-        b->req.type = VIRTIO_BLK_T_IN;
+        b->req.type = VIRTIO_BLK_T_IN; /* read direction for the driver */
         virtio_blk_rw(b);
         b->valid = 1;
     }
@@ -94,18 +107,23 @@ bread(uint32 dev, uint32 blockno) {
 }
 
 /*
- * bwrite — flush a locked buffer to disk synchronously.
+ * bwrite — flush a locked buffer's data to disk, synchronously.
+ * Caller must hold b->lock (it came from bread).
  */
 void
 bwrite(struct buf *b) {
     if (!sleep_holding(&b->lock))
         panic("bwrite: buf not locked");
-    b->req.type = VIRTIO_BLK_T_OUT;
+    b->req.type = VIRTIO_BLK_T_OUT; /* write direction for the driver */
     virtio_blk_rw(b);
 }
 
 /*
- * brelse — release a locked buffer.
+ * brelse — release a locked buffer: drop the data lock, drop the ref.
+ *
+ * Lock order is the reverse of bget: release the sleeplock first, then take
+ * bcache.lock to touch refcnt and the LRU list. When the last ref drops,
+ * move the buffer to the MRU end (front) — see "Why LRU" in Lecture 7-2.
  */
 void
 brelse(struct buf *b) {
@@ -115,9 +133,9 @@ brelse(struct buf *b) {
 
     unsigned long irq;
     spin_lock_irqsave(&bcache.lock, &irq);
-    if (--b->refcnt == 0) {
+    if (--b->refcnt == 0) { /* no users left → now an evictable cache entry */
         list_del(&b->lru_link);
-        list_add(&b->lru_link, &bcache.lru);
+        list_add(&b->lru_link, &bcache.lru); /* front = most-recently-used */
     }
     spin_unlock_irqrestore(&bcache.lock, irq);
 }

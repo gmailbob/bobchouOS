@@ -13,8 +13,9 @@
 
 /* Shared between the main test and the contender thread. */
 static struct sleeplock test_sl;
-static volatile int contender_ran; /* contender reached sleep_lock */
-static volatile int contender_got; /* contender acquired the lock */
+static volatile int contender_ran;  /* contender reached sleep_lock */
+static volatile int contender_got;  /* contender acquired the lock */
+static volatile int contender_done; /* contender released + about to exit */
 
 /*
  * contender_thread — try to acquire a lock the main thread already holds.
@@ -28,6 +29,7 @@ contender_thread(void) {
     sleep_lock(&test_sl); /* blocks: main holds it */
     contender_got = 1;    /* only reached after main releases */
     sleep_unlock(&test_sl);
+    contender_done = 1; /* publish in OUR storage before exit (see note below) */
     proc_exit(0);
 }
 
@@ -54,6 +56,7 @@ test_sleeplock(void) {
     sleep_init(&test_sl, "test_sl_live");
     contender_ran = 0;
     contender_got = 0;
+    contender_done = 0;
 
     /* Main thread takes the lock first. */
     sleep_lock(&test_sl);
@@ -61,7 +64,9 @@ test_sleeplock(void) {
     struct proc *contender = proc_create_kernel(contender_thread, "sl_contend");
     TEST_ASSERT(contender != 0, "contender process created");
 
-    /* Let it run and block inside sleep_lock (we still hold the lock). */
+    /* Let it run and block inside sleep_lock (we still hold the lock).
+     * Inspecting contender->state here is safe: it's blocked, so the struct
+     * proc is alive (contrast the exit wait below, where it may be freed). */
     for (int i = 0; i < 100; i++) {
         yield();
         spin_lock(&contender->lock);
@@ -86,16 +91,16 @@ test_sleeplock(void) {
     }
     TEST_ASSERT(contender_got == 1, "contender acquired after main released");
 
-    /* Let it finish exiting. */
+    /* Wait via the contender_done flag, NOT contender->state: after
+     * proc_exit() the contender is reaped (free_proc frees its struct proc),
+     * so the pointer dangles — reading contender->lock.locked yields garbage
+     * and spin_lock() would spin forever on it. The flag lives in our data
+     * segment and survives the reap. */
     for (int i = 0; i < 100; i++) {
         yield();
-        spin_lock(&contender->lock);
-        int done = (contender->state == PROC_ZOMBIE);
-        spin_unlock(&contender->lock);
-        if (done)
+        if (contender_done)
             break;
     }
-    spin_lock(&contender->lock);
-    TEST_ASSERT(contender->state == PROC_ZOMBIE, "contender exited");
-    spin_unlock(&contender->lock);
+    TEST_ASSERT(contender_done == 1, "contender released and exited");
+    (void)contender; /* do NOT dereference after exit — struct may be freed */
 }
