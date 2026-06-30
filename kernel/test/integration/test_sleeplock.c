@@ -13,8 +13,8 @@
 
 /* Shared between the main test and the contender thread. */
 static struct sleeplock test_sl;
-static volatile int contender_ran;  /* contender reached sleep_lock */
-static volatile int contender_got;  /* contender acquired the lock */
+static volatile int contender_ran; /* contender reached sleep_lock */
+static volatile int contender_got; /* contender acquired the lock */
 
 /*
  * contender_thread — try to acquire a lock the main thread already holds.

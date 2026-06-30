@@ -270,12 +270,7 @@ virtio_blk_submit(struct buf *b) {
 
     /* Fill the request header in the buf. The DIRECTION now comes from the
      * caller: bread sets b->req.type = VIRTIO_BLK_T_IN, bwrite sets
-     * VIRTIO_BLK_T_OUT (Round 7-2). The descriptor flags below key off it.
-     *
-     * TODO(you, 7-2): derive `write` from b->req.type instead of hardcoding.
-     *   int write = (b->req.type == VIRTIO_BLK_T_OUT);
-     * (Round 7-1 hardcoded write=0 for the block-0 read smoke test.) */
-    int write = 0; /* TODO: write = (b->req.type == VIRTIO_BLK_T_OUT); */
+     * VIRTIO_BLK_T_OUT. */
     b->req.reserved = 0;
     b->req.sector = (uint64)b->blockno * SECTORS_PER_BLOCK; /* 64-bit math */
 
@@ -288,7 +283,8 @@ virtio_blk_submit(struct buf *b) {
     /* Fill descriptor d1 (data) */
     disk.desc[d1].addr = (uint64)b->data;
     disk.desc[d1].len = BSIZE;
-    disk.desc[d1].flags = VIRTQ_DESC_F_NEXT | (write ? VIRTQ_DESC_F_WRITE : 0);
+    disk.desc[d1].flags =
+        VIRTQ_DESC_F_NEXT | (b->req.type == VIRTIO_BLK_T_OUT ? VIRTQ_DESC_F_WRITE : 0);
     disk.desc[d1].next = d2;
 
     /* Fill descriptor d2 (status, device writes one byte, end of chain) */

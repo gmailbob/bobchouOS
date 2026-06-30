@@ -26,6 +26,7 @@
  *     list_for_each(pos, head)                        raw node iteration
  *     list_for_each_safe(pos, tmp, head)              safe node iteration
  *     list_for_each_entry(pos, head, member)          struct iteration
+ *     list_for_each_entry_reverse(pos, head, member)  struct iteration (tail→head)
  *     list_for_each_entry_safe(pos, tmp, head, member) safe struct iteration
  *
  *   Helpers:
@@ -243,6 +244,22 @@ list_is_singular(struct list_head *head) {
 #define list_for_each_entry(pos, head, member)                                                     \
     for (pos = list_entry((head)->next, typeof(*pos), member); &pos->member != (head);             \
          pos = list_entry(pos->member.next, typeof(*pos), member))
+
+/*
+ * list_for_each_entry_reverse — iterate over entries from tail to head.
+ *
+ * Same as list_for_each_entry but walks `prev` instead of `next`. Handy
+ * when the tail is the "oldest" end (e.g. scanning an LRU list for the
+ * least-recently-used victim). Same WARNING applies: do not use `pos`
+ * after the loop without a `break`.
+ *
+ * @pos:    type * used as loop cursor
+ * @head:   the list head (sentinel)
+ * @member: name of the list_head field within the struct
+ */
+#define list_for_each_entry_reverse(pos, head, member)                                             \
+    for (pos = list_entry((head)->prev, typeof(*pos), member); &pos->member != (head);             \
+         pos = list_entry(pos->member.prev, typeof(*pos), member))
 
 /*
  * list_for_each_entry_safe — iterate with safe deletion (entry version).
